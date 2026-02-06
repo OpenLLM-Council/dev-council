@@ -8,23 +8,27 @@
 *.log
 
 # =========================
-# Go (backend/)
+# Python (backend/)
 # =========================
-backend/bin/
-backend/tmp/
-backend/vendor/
-backend/*.exe
-backend/*.exe~
-backend/*.dll
-backend/*.so
-backend/*.dylib
-backend/*.test
-backend/*.out
-backend/coverage.out
-
-# Go workspace
-backend/go.work
-backend/go.work.sum
+__pycache__/
+**/__pycache__/
+backend/*.py[cod]
+backend/*$py.class
+backend/.venv/
+backend/venv/
+backend/env/
+backend/ENV/
+backend/build/
+backend/dist/
+backend/*.egg-info/
+backend/.pytest_cache/
+backend/.coverage
+backend/htmlcov/
+backend/.nox/
+backend/.tox/
+backend/pip-log.txt
+backend/pip-delete-this-directory.txt
+backend/outputs/
 
 # =========================
 # Next.js / Node (frontend/)
