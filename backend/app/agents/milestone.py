@@ -66,12 +66,9 @@ def get_milestone_agent():
         temperature=settings.OLLAMA_TEMPERATURE,
     )
 
-    
-
     agent = create_agent(
         model=llm,
         system_prompt=MILESTONE_TEMPLATE,
-        debug=True,
     )
 
     return agent

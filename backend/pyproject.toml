@@ -10,5 +10,6 @@ dependencies = [
     "langgraph>=1.0.7",
     "markdown>=3.10.1",
     "markdown-pdf>=1.11",
+    "mermaidian>=0.1.2",
     "python-dotenv>=1.2.1",
 ]

@@ -68,7 +68,6 @@ def get_project_lead_agent():
         model=llm,
         tools=tools,
         system_prompt=PROJECT_LEAD_TEMPLATE,
-        debug=True,
     )
 
     return agent
