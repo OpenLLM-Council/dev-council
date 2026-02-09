@@ -1,21 +1,15 @@
 import os
 import sys
-from app.agents.project_lead import get_project_lead_agent
+from app.agents.manager import get_manager
 
 
 def run():
-    agent = get_project_lead_agent()
+    manager = get_manager()
 
     user_input = input("User request: ")
 
     try:
-        result = agent.invoke({"messages": [{"role": "user", "content": user_input}]})
-        output = result["messages"][-1].content
-        print(output)
-
-        os.makedirs("outputs", exist_ok=True)
-        with open("outputs/output.md", "w", encoding="utf-8") as f:
-            f.write(output)
+        manager.process_request(user_input)
 
     except Exception as e:
         print(f"Error: {e}")
