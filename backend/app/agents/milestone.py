@@ -3,13 +3,22 @@ from app.tools.save_file import save_file
 from langchain.agents import create_agent
 from langchain_ollama import ChatOllama
 from app.core.config import settings
+from app.tools.llm_resources import list_llms
+
 
 MILESTONE_TEMPLATE = """You are the **Milestone Manager AI**.
 
 Your responsibility is to convert the provided project plan
 (from the Project Lead) into a **milestone planning document**.
 
-You are a **planning-only agent**.
+You are a **planning agent**.
+
+---
+
+## TOOLS
+
+You have access to the following tools:
+1. list_llms — returns available LLM model names
 
 ---
 
@@ -47,7 +56,7 @@ Your FINAL output MUST be a **Markdown file** with:
 - Output **ONLY** the milestone plan (no explanations, no commentary).
 - **DO NOT** use fenced code blocks for the table.
 - **DO NOT** add extra headings, notes, or text.
-- **DO NOT** invent LLM names — use only those present in the input.
+- **DO NOT** invent LLM names — get them from 'list_llms' tool.
 - Combine related subtasks into logical milestones.
 - Keep milestone descriptions short and action-oriented.
 - Planning only — no execution steps.
@@ -65,9 +74,10 @@ def get_milestone_agent():
         base_url=settings.OLLAMA_URL,
         temperature=settings.OLLAMA_TEMPERATURE,
     )
-
+    tools = [list_llms]
     agent = create_agent(
         model=llm,
+        tools=tools,
         system_prompt=MILESTONE_TEMPLATE,
     )
 
