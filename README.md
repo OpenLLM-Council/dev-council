@@ -1,4 +1,4 @@
-# Dev Council 🎯
+# Dev Council 
 
 > **A Multi-Agent LLM Framework for Collaborative Software Development**
 
@@ -22,17 +22,17 @@ An innovative open-source framework that implements a council of AI agents worki
 
 ## Features
 
-✨ **Multi-Agent Collaboration** - Multiple specialized LLM agents work together to analyze requirements and design solutions
+ **Multi-Agent Collaboration** - Multiple specialized LLM agents work together to analyze requirements and design solutions
 
-📋 **Automated SRS Generation** - Creates IEEE 830-compliant Software Requirements Specification documents
+ **Automated SRS Generation** - Creates IEEE 830-compliant Software Requirements Specification documents
 
-🎯 **Milestone Planning** - Automatically generates project milestones with task breakdowns and LLM assignments
+ **Milestone Planning** - Automatically generates project milestones with task breakdowns and LLM assignments
 
-🔄 **System Architecture Diagrams** - Generates Mermaid-based flow diagrams for system design visualization
+ **System Architecture Diagrams** - Generates Mermaid-based flow diagrams for system design visualization
 
-🤖 **Local LLM Support** - Runs on local Ollama instances (Qwen, DeepSeek, Mistral, etc.) - no API keys required
+ **Local LLM Support** - Runs on local Ollama instances (Qwen, DeepSeek, Mistral, etc.) - no API keys required
 
-📦 **End-to-End Workflow** - From user request to comprehensive project documentation in minutes
+ **End-to-End Workflow** - From user request to comprehensive project documentation in minutes
 
 ## How It Works
 
@@ -270,31 +270,31 @@ npm run dev
 
 ## Roadmap
 
-### Phase 1: Planning & Analysis ✅ (Complete)
+### Phase 1: Planning & Analysis  (Complete)
 - [x] Manager Agent - Orchestration and workflow coordination
 - [x] Project Lead Agent - SRS generation and requirements analysis
 - [x] Milestone Agent - Project breakdown and timeline planning
 - [x] Flow Diagram Agent - System architecture visualization
 
-### Phase 2: Code Generation 🔄 (In Progress)
+### Phase 2: Code Generation  (In Progress)
 - [ ] Code Generation Agent - Generate implementation code from SRS
 - [ ] Language-specific code generators (Python, JavaScript, TypeScript, etc.)
 - [ ] Architecture implementation templates
 - [ ] Database schema generation
 
-### Phase 3: Quality Assurance 📋 (Pending)
+### Phase 3: Quality Assurance  (Pending)
 - [ ] Code Review Agent - Automated code analysis and best practices validation
 - [ ] Test Case Generation Agent - Create unit and integration tests
 - [ ] Bug detection and security vulnerability scanning
 - [ ] Performance optimization recommendations
 
-### Phase 4: Finalization & Integration 🎯 (Pending)
+### Phase 4: Finalization & Integration  (Pending)
 - [ ] Finalization Agent - Consolidate generated code and documentation
 - [ ] API documentation generation
 - [ ] Deployment configuration generation (Docker, K8s, etc.)
 - [ ] Project structure finalization and cleanup
 
-### Additional Features 🚀 (Backlog)
+### Additional Features  (Backlog)
 - [ ] Web UI for project submissions and result visualization
 - [ ] Support for additional LLM providers (OpenAI, Claude, etc.)
 - [ ] Integration with Git for version control
@@ -310,13 +310,6 @@ npm run dev
 - Built with [LangChain](https://langchain.com/) and [LangGraph](https://langchain-ai.github.io/langgraph/)
 - LLM inference powered by [Ollama](https://ollama.ai/)
 - UI built with [Next.js](https://nextjs.org/) and [Tailwind CSS](https://tailwindcss.com/)
-
-## Support
-
-If you have questions or run into issues:
-- Check the [Issues](https://github.com/yourusername/dev-council/issues) page
-- Review the [Documentation](./docs)
-- Start a [Discussion](https://github.com/yourusername/dev-council/discussions)
 
 ---
 
