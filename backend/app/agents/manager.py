@@ -55,6 +55,51 @@ class ManagerAgent:
         markdown_to_pdf("project_plan.md", "project_plan.pdf")
         print("Project plan saved")
 
+        # -------- Human-in-the-Loop: SRS Review --------
+        stage("SRS Review")
+        print("\n📄 SRS document saved. Please review it before approving:")
+        print(f"   Markdown: outputs/project_plan.md")
+        print(f"   PDF:      outputs/project_plan.pdf\n")
+
+        while True:
+            decision = input("Do you approve this SRS? (approve/edit): ").strip().lower()
+
+            if decision == "approve":
+                print("SRS approved ✓")
+                break
+            elif decision == "edit":
+                feedback = input("What changes should be made? ").strip()
+                if not feedback:
+                    print("No feedback provided. Please try again.")
+                    continue
+
+                stage("Revising SRS based on feedback")
+                loader("Revising")
+
+                revision_prompt = (
+                    f"You previously generated the following SRS document for this request:\n\n"
+                    f"--- ORIGINAL USER REQUEST ---\n{user_query}\n\n"
+                    f"--- CURRENT SRS DOCUMENT ---\n{project_plan}\n\n"
+                    f"--- USER FEEDBACK ---\n{feedback}\n\n"
+                    f"Please revise the SRS document to incorporate the user's feedback. "
+                    f"Output ONLY the complete revised SRS document."
+                )
+
+                project_plan = extract_text(
+                    self.project_lead.invoke(
+                        {"messages": [HumanMessage(content=revision_prompt)]}
+                    )
+                )
+
+                save_file("project_plan.md", project_plan)
+                markdown_to_pdf("project_plan.md", "project_plan.pdf")
+
+                print("\n📄 Revised SRS saved. Please review the updated document:")
+                print(f"   Markdown: outputs/project_plan.md")
+                print(f"   PDF:      outputs/project_plan.pdf\n")
+            else:
+                print("Invalid input. Please enter 'approve' or 'edit'.")
+
         # -------- Milestones --------
         stage("Generating Milestones")
         loader("Analyzing plan")
