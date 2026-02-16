@@ -26,7 +26,6 @@ You have access to the following tools:
 You will receive a project plan containing:
 - Requirements
 - Subtasks
-- Assigned LLMs
 
 You must extract milestones from this input.
 
@@ -41,13 +40,13 @@ Your FINAL output MUST be a **Markdown file** with:
 - Each milestone MUST include:
   - A checkbox
   - A concise task description
-  - One or more assigned LLMs
+  - One assigned LLM
 
 ### TABLE FORMAT (EXACT)
 
 | Milestone | Description | LLM |
 |-----------|------------|-----|
-| [ ] | Short description of the milestone | llm1, llm2 |
+| [ ] | Short description of the milestone | llm |
 
 ---
 
