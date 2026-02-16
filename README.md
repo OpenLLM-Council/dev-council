@@ -1,4 +1,6 @@
-# Dev Council 
+# dev-council
+
+<img src="./frontend/public/demo.png" alt="dev-council" />
 
 > **A Multi-Agent LLM Framework for Collaborative Software Development**
 

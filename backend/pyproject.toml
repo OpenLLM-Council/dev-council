@@ -11,5 +11,7 @@ dependencies = [
     "markdown>=3.10.1",
     "markdown-pdf>=1.11",
     "mermaidian>=0.1.2",
+    "pyfiglet>=1.0.4",
     "python-dotenv>=1.2.1",
+    "rich>=14.3.2",
 ]
