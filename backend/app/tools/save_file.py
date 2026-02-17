@@ -31,15 +31,16 @@ def save_file(file_name: str, content: Any) -> str:
     """
     Useful for saving files. Supports string, dict, Pydantic model, or LangChain message content.
     Args:
-        file_name (str): The name of the file to save.
+        file_name (str): The name/path of the file to save (relative to outputs/).
         content (Any): The content to save to the file.
     """
-    os.makedirs("outputs", exist_ok=True)
+    file_path = os.path.join("outputs", file_name)
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
     content_str = _serialize_content(content)
 
-    with open(f"outputs/{file_name}", "w", encoding="utf-8") as f:
+    with open(file_path, "w", encoding="utf-8") as f:
         f.write(content_str)
-    return f"File saved to outputs/{file_name}"
+    return f"File saved to {file_path}"
 
 
 def markdown_to_pdf(markdown_file_name: str, pdf_file_name: str) -> str:
@@ -53,8 +54,9 @@ def markdown_to_pdf(markdown_file_name: str, pdf_file_name: str) -> str:
     """
     os.makedirs("outputs", exist_ok=True)
     
-    md_path = f"outputs/{markdown_file_name}"
-    pdf_path = f"outputs/{pdf_file_name}"
+    md_path = os.path.join("outputs", markdown_file_name)
+    pdf_path = os.path.join("outputs", pdf_file_name)
+    os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
     
     # Read markdown file
     with open(md_path, "r", encoding="utf-8") as f:
