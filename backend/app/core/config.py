@@ -1,5 +1,8 @@
 import os
 from dotenv import load_dotenv
+from firecrawl import Firecrawl
+
+firecrawl = Firecrawl(api_url="http://localhost:3002/")
 
 # Load environment variables from .env file
 load_dotenv()
@@ -12,6 +15,7 @@ class Settings:
     OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
     OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", 0))
     MISTRAL_LLM = os.getenv("MISTRAL_LLM", "mistral-small:24b")
+    FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 
 
 settings = Settings()
