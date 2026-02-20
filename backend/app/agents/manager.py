@@ -1,3 +1,4 @@
+import os
 from langgraph.checkpoint.memory import InMemorySaver
 from typing import TypedDict, Literal, Annotated
 
@@ -15,7 +16,11 @@ from app.agents.flow_diagram import get_flow_diagram_agent
 from app.tools.save_file import save_file, markdown_to_pdf
 from app.agents.tech_stack_agent import get_tech_stack_agent
 from app.agents.consensus_agent import get_consensus_agent, get_manager_decision_agent
-from app.tools.llm_resources import get_available_llms
+from app.agents.coder_agent import get_coder_agent
+from app.agents.reviewer_agent import get_reviewer_agent
+from app.agents.instructions_agent import get_instructions_agent
+from app.tools.llm_resources import get_available_llms, get_coder_llms
+from app.tools.file_writer import write_code_files
 
 console = Console()
 
@@ -53,7 +58,15 @@ class ManagerState(TypedDict):
     llm_proposals: Annotated[dict, merge_dicts]
     project_path: str
     chosen_approach: str
+    chosen_llm_model: str
     memory: InMemorySaver
+    # Coding pipeline
+    generated_code: str
+    review_feedback: str
+    code_approved: bool
+    code_attempt: int
+    run_instructions: str
+    user_run_feedback: str
 
 
 def call_project_lead(state: ManagerState):
@@ -449,9 +462,220 @@ def consensus_review(state: ManagerState):
 
 def check_consensus_review(
     state: ManagerState,
-) -> Literal["manager_decision", "__end__"]:
+) -> Literal["manager_decision", "code_milestone"]:
     if state.get("revision_needed"):
         return "manager_decision"
+    return "code_milestone"
+
+
+def _extract_chosen_llm_model(chosen_approach: str) -> str:
+    """Picks a coder-specialized model if available, otherwise falls back to
+    whichever LLM the manager named in the decision text."""
+    # Priority 1: coder-specific models (GRANITE_LLM, QWEN_CODER_LLM, etc.)
+    coder_llms = get_coder_llms()
+    if coder_llms:
+        # If the manager explicitly named one of the coder models, use that one
+        for llm_info in coder_llms:
+            if llm_info["name"].upper() in chosen_approach.upper():
+                return llm_info["model"]
+        # Otherwise default to the first coder model
+        return coder_llms[0]["model"]
+
+    # Priority 2: whatever the manager named in the decision text
+    available = get_available_llms()
+    for llm_info in available:
+        if llm_info["name"].upper() in chosen_approach.upper():
+            return llm_info["model"]
+
+    # Fallback: first available model
+    return available[0]["model"] if available else ""
+
+
+def code_milestone(state: ManagerState):
+    """The assigned LLM writes code for the current milestone."""
+    console.rule("[bold cyan]Coding Milestone[/bold cyan]")
+
+    milestone = state.get("current_milestone", "")
+    chosen_approach = state.get("chosen_approach", "")
+    tech_stack = state.get("tech_stack", "")
+    project_plan = state.get("project_plan", "")
+    review_feedback = state.get("review_feedback", "")
+    revision_needed = state.get("revision_needed", False)
+
+    # Resolve the chosen LLM model
+    chosen_model = state.get("chosen_llm_model") or _extract_chosen_llm_model(chosen_approach)
+
+    console.print(f"[bold blue]  ➤ Coding with model: {chosen_model}[/bold blue]")
+
+    if revision_needed and review_feedback:
+        input_text = (
+            f"## Milestone\n{milestone}\n\n"
+            f"## Chosen Approach\n{chosen_approach}\n\n"
+            f"## Tech Stack\n{tech_stack}\n\n"
+            f"## Reviewer Feedback\n{review_feedback}\n\n"
+            f"Fix all issues raised in the reviewer feedback."
+        )
+        agent = get_coder_agent(chosen_model, revision=True)
+    else:
+        input_text = (
+            f"## Milestone\n{milestone}\n\n"
+            f"## Chosen Approach\n{chosen_approach}\n\n"
+            f"## Tech Stack\n{tech_stack}\n\n"
+            f"## Project SRS (context)\n{project_plan}"
+        )
+        agent = get_coder_agent(chosen_model, revision=False)
+
+    with console.status("[bold green]Writing code...", spinner="dots"):
+        response = agent.invoke({"input": input_text})
+
+    generated_code = response.content if hasattr(response, "content") else str(response)
+    console.print("[bold green]  ✓ Code generation complete[/bold green]")
+
+    attempt = state.get("code_attempt", 0) + 1
+    return {"generated_code": generated_code, "chosen_llm_model": chosen_model, "revision_needed": False, "code_attempt": attempt}
+
+
+def review_code(state: ManagerState):
+    """A reviewer agent checks the generated code."""
+    console.rule("[bold cyan]Code Review[/bold cyan]")
+
+    milestone = state.get("current_milestone", "")
+    chosen_approach = state.get("chosen_approach", "")
+    generated_code = state.get("generated_code", "")
+
+    input_text = (
+        f"## Milestone\n{milestone}\n\n"
+        f"## Chosen Approach\n{chosen_approach}\n\n"
+        f"## Generated Code\n{generated_code}"
+    )
+
+    reviewer = get_reviewer_agent()
+
+    with console.status("[bold green]Reviewing code...", spinner="dots"):
+        response = reviewer.invoke({"input": input_text})
+
+    review_text = response.content if hasattr(response, "content") else str(response)
+    approved = review_text.strip().upper().startswith("APPROVED")
+
+    console.print(
+        f"[bold {'green' if approved else 'yellow'}]  Review: {'APPROVED ✓' if approved else 'NEEDS REVISION ✗'}[/bold {'green' if approved else 'yellow'}]"
+    )
+    console.print(f"[dim]{review_text}[/dim]")
+
+    return {"review_feedback": review_text, "code_approved": approved, "revision_needed": not approved}
+
+
+def check_code_review(
+    state: ManagerState,
+) -> Literal["code_milestone", "generate_run_instructions"]:
+    MAX_ATTEMPTS = 2
+    attempt = state.get("code_attempt", 0)
+    if state.get("revision_needed") and attempt < MAX_ATTEMPTS:
+        console.print(f"[bold yellow]  Revision requested (attempt {attempt}/{MAX_ATTEMPTS})[/bold yellow]")
+        return "code_milestone"
+    if attempt >= MAX_ATTEMPTS:
+        console.print(f"[bold yellow]  Max attempts reached — proceeding with current code[/bold yellow]")
+    return "generate_run_instructions"
+
+
+def write_code_to_disk(state: ManagerState):
+    """Writes the approved code files to the project directory."""
+    console.rule("[bold cyan]Writing Code Files[/bold cyan]")
+
+    generated_code = state.get("generated_code", "")
+    project_path = state.get("project_path", "outputs")
+    folder = state.get("milestone_folder", "milestone_1")
+
+    code_dir = os.path.join(project_path, "code", folder)
+    written = write_code_files(generated_code, code_dir)
+
+    console.print(f"[bold green]  ✓ Written {len(written)} file(s) to {code_dir}[/bold green]")
+    for f in written:
+        console.print(f"[dim]    {f}[/dim]")
+
+    return {}
+
+
+def generate_run_instructions(state: ManagerState):
+    """Generates a how-to-run README for the milestone."""
+    console.rule("[bold cyan]Generating Run Instructions[/bold cyan]")
+
+    milestone = state.get("current_milestone", "")
+    tech_stack = state.get("tech_stack", "")
+    generated_code = state.get("generated_code", "")
+    project_path = state.get("project_path", "outputs")
+    folder = state.get("milestone_folder", "milestone_1")
+
+    input_text = (
+        f"## Milestone\n{milestone}\n\n"
+        f"## Tech Stack\n{tech_stack}\n\n"
+        f"## Generated Code\n{generated_code}"
+    )
+
+    agent = get_instructions_agent()
+    with console.status("[bold green]Writing run instructions...", spinner="dots"):
+        response = agent.invoke({"input": input_text})
+
+    instructions = response.content if hasattr(response, "content") else str(response)
+
+    save_file(f"{folder}/run_instructions.md", instructions, base_path=project_path)
+    console.print(f"[bold green]  ✓ Run instructions saved to {project_path}/{folder}/run_instructions.md[/bold green]")
+
+    return {"run_instructions": instructions}
+
+
+def user_run_review(state: ManagerState):
+    """HITL: User runs the project and gives feedback."""
+    console.rule("[bold magenta]User Run Review[/bold magenta]")
+
+    project_path = state.get("project_path", "outputs")
+    folder = state.get("milestone_folder", "milestone_1")
+    instructions_path = f"{project_path}/{folder}/run_instructions.md"
+    code_path = f"{project_path}/code/{folder}/"
+
+    console.print(
+        Panel(
+            f"[bold]Run Instructions:[/bold] {instructions_path}\n"
+            f"[bold]Code Directory:[/bold]   {code_path}\n\n"
+            f"Please follow the instructions to run the project, then come back here.",
+            title="[bold blue]Your Project is Ready![/bold blue]",
+            border_style="green",
+        )
+    )
+
+    while True:
+        decision = (
+            console.input(
+                "[bold yellow]Did the project run successfully? (yes/no): [/bold yellow]"
+            )
+            .strip()
+            .lower()
+        )
+        if decision == "yes":
+            console.print("[bold green]Great! Milestone complete ✓[/bold green]")
+            return {"revision_needed": False, "user_run_feedback": ""}
+        elif decision == "no":
+            feedback = console.input(
+                "[bold cyan]Describe what went wrong: [/bold cyan]"
+            ).strip()
+            if not feedback:
+                console.print(
+                    "[bold red]No feedback provided. Please try again.[/bold red]"
+                )
+                continue
+            console.print("[bold yellow]Sending feedback to coder...[/bold yellow]")
+            return {"revision_needed": True, "user_run_feedback": feedback, "review_feedback": feedback, "code_attempt": 0}
+        else:
+            console.print(
+                "[bold red]Invalid input. Please enter 'yes' or 'no'.[/bold red]"
+            )
+
+
+def check_user_run_review(
+    state: ManagerState,
+) -> Literal["code_milestone", "__end__"]:
+    if state.get("revision_needed"):
+        return "code_milestone"
     return END
 
 
@@ -496,6 +720,19 @@ class ManagerAgent:
 
         workflow.add_edge("manager_decision", "consensus_review")
         workflow.add_conditional_edges("consensus_review", check_consensus_review)
+
+        # --- Coding pipeline: generate → write → review → (loop or continue) ---
+        workflow.add_node("code_milestone", code_milestone)
+        workflow.add_node("write_code_to_disk", write_code_to_disk)
+        workflow.add_node("review_code", review_code)
+        workflow.add_node("generate_run_instructions", generate_run_instructions)
+        workflow.add_node("user_run_review", user_run_review)
+
+        workflow.add_edge("code_milestone", "write_code_to_disk")
+        workflow.add_edge("write_code_to_disk", "review_code")
+        workflow.add_conditional_edges("review_code", check_code_review)
+        workflow.add_edge("generate_run_instructions", "user_run_review")
+        workflow.add_conditional_edges("user_run_review", check_user_run_review)
 
         self.app = workflow.compile()
 
