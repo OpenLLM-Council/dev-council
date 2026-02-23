@@ -38,8 +38,10 @@ def save_file(file_name: str, content: Any, base_path: str = "outputs") -> str:
         content (Any): The content to save to the file.
         base_path (str): The base directory for saving files. Defaults to "outputs".
     """
-    file_path = os.path.join(f"{base_path}/project", file_name)
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    file_path = os.path.join(base_path, file_name)
+    parent = os.path.dirname(file_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     content_str = _serialize_content(content)
 
     with open(file_path, "w", encoding="utf-8") as f:
@@ -59,10 +61,10 @@ def markdown_to_pdf(
     Returns:
         str: Success message with PDF file path
     """
-    os.makedirs(f"{base_path}/project", exist_ok=True)
+    os.makedirs(base_path, exist_ok=True)
 
-    md_path = os.path.join(f"{base_path}/project", markdown_file_name)
-    pdf_path = os.path.join(f"{base_path}/project", pdf_file_name)
+    md_path = os.path.join(base_path, markdown_file_name)
+    pdf_path = os.path.join(base_path, pdf_file_name)
     os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
 
     with open(md_path, "r", encoding="utf-8") as f:
