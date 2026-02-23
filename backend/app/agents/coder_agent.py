@@ -6,21 +6,27 @@ CODER_PROMPT = """You are a senior software developer assigned to implement a sp
 
 You will receive:
 - The **milestone** description
-- The **chosen implementation approach**
+- The **chosen implementation approach** (Consensus)
 - The **tech stack**
 - The **project SRS** for context
 
 ## OUTPUT FORMAT (STRICT)
 
-Output ONLY code files using fenced code blocks.
-EVERY code block MUST be labeled with the EXACT relative file path as it exists in the project.
+Output ONLY code files using fenced code blocks. 
+To ensure files are saved correctly, the fenced code block MUST use the EXACT relative file path as the language label. Do NOT use "python" or "javascript" as the label. 
 
-Examples of correct labels:
-- src/services/AuthService.js
-- src/routes/auth.js
-- app/models/user.py
-- config/database.yaml
-- package.json
+Examples of correct code blocks:
+
+```src/services/auth_service.py
+def login():
+    pass
+```
+
+```frontend/package.json
+{{
+  "name": "my-app"
+}}
+```
 
 The label MUST be the real file path — NOT a description, NOT "relative/path/to/file".
 
@@ -38,10 +44,13 @@ CODER_REVISION_PROMPT = """You are a senior software developer. Your previously 
 
 ## OUTPUT FORMAT (STRICT)
 
-Output ONLY the corrected code files as fenced code blocks with real file paths as labels:
+Output ONLY the corrected code files as fenced code blocks.
+The fenced code block MUST use the EXACT relative file path as the language label.
 
-```src/services/AuthService.js
-// corrected code
+Example of a correct code block:
+
+```src/services/auth_service.py
+# corrected code
 ```
 
 ## RULES
@@ -54,11 +63,17 @@ Begin.
 """
 
 proposal_prompt = ChatPromptTemplate.from_messages(
-    [("system", CODER_PROMPT), ("human", "{input}")]
+    [
+        ("system", CODER_PROMPT),
+        ("human", "{input}"),
+    ]
 )
 
 revision_prompt = ChatPromptTemplate.from_messages(
-    [("system", CODER_REVISION_PROMPT), ("human", "{input}")]
+    [
+        ("system", CODER_REVISION_PROMPT),
+        ("human", "{input}"),
+    ]
 )
 
 
@@ -68,7 +83,7 @@ def get_coder_agent(model_name: str, revision: bool = False):
         model=model_name,
         base_url=settings.OLLAMA_URL,
         temperature=settings.OLLAMA_TEMPERATURE,
-        num_predict=4096,   # cap output tokens to prevent infinite generation
+        num_predict=4096,  # cap output tokens to prevent infinite generation
     )
     prompt = revision_prompt if revision else proposal_prompt
     return prompt | llm

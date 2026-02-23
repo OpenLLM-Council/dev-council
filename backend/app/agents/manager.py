@@ -15,6 +15,7 @@ from app.agents.milestone import get_milestone_agent
 from app.agents.flow_diagram import get_flow_diagram_agent
 from app.tools.save_file import save_file, markdown_to_pdf
 from app.agents.tech_stack_agent import get_tech_stack_agent
+from app.agents.tech_stack_agent import get_tech_stack_agent
 from app.agents.consensus_agent import get_consensus_agent, get_manager_decision_agent
 from app.agents.coder_agent import get_coder_agent
 from app.agents.reviewer_agent import get_reviewer_agent
@@ -55,12 +56,15 @@ class ManagerState(TypedDict):
     revision_needed: bool
     current_milestone: str
     milestone_folder: str
+    all_milestones: list[str]
+    current_milestone_index: int
     llm_proposals: Annotated[dict, merge_dicts]
+    proceed_to_next: bool
+
     project_path: str
     chosen_approach: str
     chosen_llm_model: str
     memory: InMemorySaver
-    # Coding pipeline
     generated_code: str
     review_feedback: str
     code_approved: bool
@@ -296,15 +300,14 @@ def check_tech_stack_review(
 
 
 def pick_milestone(state: ManagerState):
-    """Extracts the first milestone from the milestone table."""
-    console.rule("[bold cyan]Picking First Milestone[/bold cyan]")
+    """Parses all milestones and prepares the first one for proposals and coding."""
+    console.rule("[bold cyan]Preparing Milestones[/bold cyan]")
     milestones_text = state.get("milestones", "")
 
-    # Parse the markdown table to get the first milestone description
     lines = milestones_text.strip().split("\n")
-    first_milestone = ""
+    parsed_milestones = []
+
     for line in lines:
-        # Skip header rows and separator rows
         if (
             line.startswith("|")
             and "---" not in line
@@ -313,17 +316,30 @@ def pick_milestone(state: ManagerState):
         ):
             cols = [col.strip() for col in line.split("|") if col.strip()]
             if len(cols) >= 2:
-                first_milestone = cols[1]
-                break
+                parsed_milestones.append(cols[1])
 
-    if not first_milestone:
-        first_milestone = "First milestone from the project plan"
+    if not parsed_milestones:
+        parsed_milestones = ["First milestone from the project plan"]
 
-    console.print(f"[bold]Selected Milestone:[/bold] {first_milestone}")
+    index = state.get("current_milestone_index", 0)
+
+    if index < len(parsed_milestones):
+        current_milestone = parsed_milestones[index]
+    else:
+        current_milestone = parsed_milestones[-1]
+
+    console.print(f"[bold]Total Milestones:[/bold] {len(parsed_milestones)}")
+    console.print(
+        f"[bold]Selected Milestone (Index {index}):[/bold] {current_milestone}"
+    )
+
     return {
-        "current_milestone": first_milestone,
-        "milestone_folder": "milestone_1",
+        "all_milestones": parsed_milestones,
+        "current_milestone": current_milestone,
+        "current_milestone_index": index,
+        "milestone_folder": f"milestone_{index + 1}",
         "llm_proposals": {},
+        "chosen_approach": "",
     }
 
 
@@ -351,7 +367,6 @@ def make_proposal_node(llm_name: str, model_name: str):
         proposal = response.content if hasattr(response, "content") else str(response)
         console.print(f"[bold green]  ✓ {llm_name} done[/bold green]")
 
-        # Save individual proposal
         folder = state.get("milestone_folder", "milestone_1")
         safe_name = llm_name.lower().replace(" ", "_")
         file_path = f"{folder}/proposal_{safe_name}.md"
@@ -363,7 +378,6 @@ def make_proposal_node(llm_name: str, model_name: str):
         )
         console.print(f"[dim]  Saved to {project_path}/{file_path}[/dim]")
 
-        # Merge into existing proposals
         existing = state.get("llm_proposals", {})
         updated = {**existing, llm_name: proposal}
         return {"llm_proposals": updated}
@@ -379,7 +393,6 @@ def manager_decision(state: ManagerState):
     revision_needed = state.get("revision_needed", False)
     feedback = state.get("feedback", "")
 
-    # Build a summary of all proposals
     proposals_text = ""
     for llm_name, proposal in proposals.items():
         proposals_text += f"\n### Proposal from {llm_name}\n{proposal}\n"
@@ -471,23 +484,20 @@ def check_consensus_review(
 def _extract_chosen_llm_model(chosen_approach: str) -> str:
     """Picks a coder-specialized model if available, otherwise falls back to
     whichever LLM the manager named in the decision text."""
-    # Priority 1: coder-specific models (GRANITE_LLM, QWEN_CODER_LLM, etc.)
     coder_llms = get_coder_llms()
     if coder_llms:
-        # If the manager explicitly named one of the coder models, use that one
-        for llm_info in coder_llms:
-            if llm_info["name"].upper() in chosen_approach.upper():
-                return llm_info["model"]
-        # Otherwise default to the first coder model
+        if chosen_approach:
+            for llm_info in coder_llms:
+                if llm_info["name"].upper() in chosen_approach.upper():
+                    return llm_info["model"]
         return coder_llms[0]["model"]
 
-    # Priority 2: whatever the manager named in the decision text
     available = get_available_llms()
-    for llm_info in available:
-        if llm_info["name"].upper() in chosen_approach.upper():
-            return llm_info["model"]
+    if chosen_approach:
+        for llm_info in available:
+            if llm_info["name"].upper() in chosen_approach.upper():
+                return llm_info["model"]
 
-    # Fallback: first available model
     return available[0]["model"] if available else ""
 
 
@@ -496,22 +506,24 @@ def code_milestone(state: ManagerState):
     console.rule("[bold cyan]Coding Milestone[/bold cyan]")
 
     milestone = state.get("current_milestone", "")
-    chosen_approach = state.get("chosen_approach", "")
     tech_stack = state.get("tech_stack", "")
+    chosen_approach = state.get("chosen_approach", "")
     project_plan = state.get("project_plan", "")
     review_feedback = state.get("review_feedback", "")
     revision_needed = state.get("revision_needed", False)
 
     # Resolve the chosen LLM model
-    chosen_model = state.get("chosen_llm_model") or _extract_chosen_llm_model(chosen_approach)
+    chosen_model = state.get("chosen_llm_model") or _extract_chosen_llm_model(
+        chosen_approach
+    )
 
     console.print(f"[bold blue]  ➤ Coding with model: {chosen_model}[/bold blue]")
 
     if revision_needed and review_feedback:
         input_text = (
             f"## Milestone\n{milestone}\n\n"
-            f"## Chosen Approach\n{chosen_approach}\n\n"
-            f"## Tech Stack\n{tech_stack}\n\n"
+            f"## Chosen Approach (from Consensus)\n{chosen_approach}\n\n"
+            f"## Approved Tech Stack\n{tech_stack}\n\n"
             f"## Reviewer Feedback\n{review_feedback}\n\n"
             f"Fix all issues raised in the reviewer feedback."
         )
@@ -519,8 +531,8 @@ def code_milestone(state: ManagerState):
     else:
         input_text = (
             f"## Milestone\n{milestone}\n\n"
-            f"## Chosen Approach\n{chosen_approach}\n\n"
-            f"## Tech Stack\n{tech_stack}\n\n"
+            f"## Chosen Approach (from Consensus)\n{chosen_approach}\n\n"
+            f"## Approved Tech Stack\n{tech_stack}\n\n"
             f"## Project SRS (context)\n{project_plan}"
         )
         agent = get_coder_agent(chosen_model, revision=False)
@@ -532,50 +544,12 @@ def code_milestone(state: ManagerState):
     console.print("[bold green]  ✓ Code generation complete[/bold green]")
 
     attempt = state.get("code_attempt", 0) + 1
-    return {"generated_code": generated_code, "chosen_llm_model": chosen_model, "revision_needed": False, "code_attempt": attempt}
-
-
-def review_code(state: ManagerState):
-    """A reviewer agent checks the generated code."""
-    console.rule("[bold cyan]Code Review[/bold cyan]")
-
-    milestone = state.get("current_milestone", "")
-    chosen_approach = state.get("chosen_approach", "")
-    generated_code = state.get("generated_code", "")
-
-    input_text = (
-        f"## Milestone\n{milestone}\n\n"
-        f"## Chosen Approach\n{chosen_approach}\n\n"
-        f"## Generated Code\n{generated_code}"
-    )
-
-    reviewer = get_reviewer_agent()
-
-    with console.status("[bold green]Reviewing code...", spinner="dots"):
-        response = reviewer.invoke({"input": input_text})
-
-    review_text = response.content if hasattr(response, "content") else str(response)
-    approved = review_text.strip().upper().startswith("APPROVED")
-
-    console.print(
-        f"[bold {'green' if approved else 'yellow'}]  Review: {'APPROVED ✓' if approved else 'NEEDS REVISION ✗'}[/bold {'green' if approved else 'yellow'}]"
-    )
-    console.print(f"[dim]{review_text}[/dim]")
-
-    return {"review_feedback": review_text, "code_approved": approved, "revision_needed": not approved}
-
-
-def check_code_review(
-    state: ManagerState,
-) -> Literal["code_milestone", "generate_run_instructions"]:
-    MAX_ATTEMPTS = 2
-    attempt = state.get("code_attempt", 0)
-    if state.get("revision_needed") and attempt < MAX_ATTEMPTS:
-        console.print(f"[bold yellow]  Revision requested (attempt {attempt}/{MAX_ATTEMPTS})[/bold yellow]")
-        return "code_milestone"
-    if attempt >= MAX_ATTEMPTS:
-        console.print(f"[bold yellow]  Max attempts reached — proceeding with current code[/bold yellow]")
-    return "generate_run_instructions"
+    return {
+        "generated_code": generated_code,
+        "chosen_llm_model": chosen_model,
+        "revision_needed": False,
+        "code_attempt": attempt,
+    }
 
 
 def write_code_to_disk(state: ManagerState):
@@ -586,10 +560,12 @@ def write_code_to_disk(state: ManagerState):
     project_path = state.get("project_path", "outputs")
     folder = state.get("milestone_folder", "milestone_1")
 
-    code_dir = os.path.join(project_path, "code", folder)
+    code_dir = os.path.join(project_path, "code")
     written = write_code_files(generated_code, code_dir)
 
-    console.print(f"[bold green]  ✓ Written {len(written)} file(s) to {code_dir}[/bold green]")
+    console.print(
+        f"[bold green]  ✓ Written {len(written)} file(s) to {code_dir}[/bold green]"
+    )
     for f in written:
         console.print(f"[dim]    {f}[/dim]")
 
@@ -619,7 +595,9 @@ def generate_run_instructions(state: ManagerState):
     instructions = response.content if hasattr(response, "content") else str(response)
 
     save_file(f"{folder}/run_instructions.md", instructions, base_path=project_path)
-    console.print(f"[bold green]  ✓ Run instructions saved to {project_path}/{folder}/run_instructions.md[/bold green]")
+    console.print(
+        f"[bold green]  ✓ Run instructions saved to {project_path}/{folder}/run_instructions.md[/bold green]"
+    )
 
     return {"run_instructions": instructions}
 
@@ -631,7 +609,7 @@ def user_run_review(state: ManagerState):
     project_path = state.get("project_path", "outputs")
     folder = state.get("milestone_folder", "milestone_1")
     instructions_path = f"{project_path}/{folder}/run_instructions.md"
-    code_path = f"{project_path}/code/{folder}/"
+    code_path = f"{project_path}/code/"
 
     console.print(
         Panel(
@@ -653,7 +631,52 @@ def user_run_review(state: ManagerState):
         )
         if decision == "yes":
             console.print("[bold green]Great! Milestone complete ✓[/bold green]")
-            return {"revision_needed": False, "user_run_feedback": ""}
+
+            current_milestone = state.get("current_milestone", "")
+            milestones_text = state.get("milestones", "")
+            if current_milestone in milestones_text:
+                updated_milestone_desc = (
+                    current_milestone.replace(" [ ] ", " [x] ")
+                    if " [ ] " in current_milestone
+                    else f"✅ {current_milestone}"
+                )
+                milestones_text = milestones_text.replace(
+                    current_milestone, updated_milestone_desc
+                )
+
+                save_file("milestone.md", milestones_text, base_path=project_path)
+                try:
+                    markdown_to_pdf(
+                        "milestone.md", "milestone.pdf", base_path=project_path
+                    )
+                except Exception as e:
+                    pass
+            else:
+                updated_milestone_desc = current_milestone
+
+            current_index = state.get("current_milestone_index", 0)
+            all_milestones = state.get("all_milestones", [])
+
+            proceed = True
+            if current_index + 1 < len(all_milestones):
+                ans = (
+                    console.input(
+                        "[bold cyan]Proceed to next milestone? (yes/no): [/bold cyan]"
+                    )
+                    .strip()
+                    .lower()
+                )
+                proceed = ans == "yes"
+
+            return {
+                "revision_needed": False,
+                "user_run_feedback": "",
+                "milestones": milestones_text,
+                "current_milestone_index": (
+                    current_index + 1 if proceed else current_index
+                ),
+                "proceed_to_next": proceed,
+            }
         elif decision == "no":
             feedback = console.input(
                 "[bold cyan]Describe what went wrong: [/bold cyan]"
@@ -664,7 +687,12 @@ def user_run_review(state: ManagerState):
                 )
                 continue
             console.print("[bold yellow]Sending feedback to coder...[/bold yellow]")
-            return {"revision_needed": True, "user_run_feedback": feedback, "review_feedback": feedback, "code_attempt": 0}
+            return {
+                "revision_needed": True,
+                "user_run_feedback": feedback,
+                "review_feedback": feedback,
+                "code_attempt": 0,
+            }
         else:
             console.print(
                 "[bold red]Invalid input. Please enter 'yes' or 'no'.[/bold red]"
@@ -673,9 +701,26 @@ def user_run_review(state: ManagerState):
 
 def check_user_run_review(
     state: ManagerState,
-) -> Literal["code_milestone", "__end__"]:
+) -> Literal["code_milestone", "pick_milestone", "__end__"]:
     if state.get("revision_needed"):
         return "code_milestone"
+
+    if not state.get("proceed_to_next", True):
+        console.print(
+            "[bold green]Closing project generation as requested.[/bold green]"
+        )
+        return END
+
+    milestones = state.get("all_milestones", [])
+    current_index = state.get("current_milestone_index", 0)
+
+    if current_index < len(milestones):
+        console.print(
+            f"[bold blue]Moving to Milestone {current_index + 1} / {len(milestones)}[/bold blue]"
+        )
+        return "pick_milestone"
+
+    console.print("[bold green]All milestones completed![/bold green]")
     return END
 
 
@@ -721,16 +766,14 @@ class ManagerAgent:
         workflow.add_edge("manager_decision", "consensus_review")
         workflow.add_conditional_edges("consensus_review", check_consensus_review)
 
-        # --- Coding pipeline: generate → write → review → (loop or continue) ---
+        # --- Coding pipeline: generate → write → (loop or continue) ---
         workflow.add_node("code_milestone", code_milestone)
         workflow.add_node("write_code_to_disk", write_code_to_disk)
-        workflow.add_node("review_code", review_code)
         workflow.add_node("generate_run_instructions", generate_run_instructions)
         workflow.add_node("user_run_review", user_run_review)
 
         workflow.add_edge("code_milestone", "write_code_to_disk")
-        workflow.add_edge("write_code_to_disk", "review_code")
-        workflow.add_conditional_edges("review_code", check_code_review)
+        workflow.add_edge("write_code_to_disk", "generate_run_instructions")
         workflow.add_edge("generate_run_instructions", "user_run_review")
         workflow.add_conditional_edges("user_run_review", check_user_run_review)
 
