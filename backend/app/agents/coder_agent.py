@@ -9,6 +9,7 @@ You will receive:
 - The **chosen implementation approach** (Consensus)
 - The **tech stack**
 - The **project SRS** for context
+- (Optional) **CURRENT CODEBASE** if this is not the first milestone
 
 ## OUTPUT FORMAT (STRICT)
 
@@ -35,6 +36,8 @@ The label MUST be the real file path — NOT a description, NOT "relative/path/t
 - Use ONLY the tech stack provided.
 - Write complete, working, production-ready files.
 - Include all necessary imports, configs, and entry points.
+- If you are modifying an existing file from CURRENT CODEBASE, output the ENTIRE updated file content, not just a diff.
+- If you do not need to modify an existing file, DO NOT output it.
 - NO prose, NO explanations — ONLY fenced code blocks.
 
 Begin.
