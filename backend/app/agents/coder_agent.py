@@ -36,9 +36,21 @@ The label MUST be the real file path — NOT a description, NOT "relative/path/t
 - Use ONLY the tech stack provided.
 - Write complete, working, production-ready files.
 - Include all necessary imports, configs, and entry points.
-- If you are modifying an existing file from CURRENT CODEBASE, output the ENTIRE updated file content, not just a diff.
+- If you are creating a NEW file, output the full file contents.
+- If you are modifying an EXISTING file from CURRENT CODEBASE, you MUST use SEARCH/REPLACE blocks.
+- The SEARCH section must EXACTLY match the existing code in the file, including all whitespace.
 - If you do not need to modify an existing file, DO NOT output it.
 - NO prose, NO explanations — ONLY fenced code blocks.
+
+### Search/Replace Block Format Example
+```src/app.ts
+<<<<
+  app.use('/api/exports', exportRouter);
+====
+  app.use('/api/exports', exportRouter);
+  app.use('/api/imports', importRouter);
+>>>>
+```
 
 Begin.
 """
@@ -59,8 +71,20 @@ Example of a correct code block:
 ## RULES
 - Labels are real file paths (e.g. `src/index.js`, `app/models.py`).
 - Address ALL reviewer feedback.
-- Write complete files — not diffs or snippets.
+- If you are creating a NEW file, output the full file contents.
+- If you are modifying an EXISTING file, you MUST use SEARCH/REPLACE blocks.
+- The SEARCH section must EXACTLY match the existing code in the file, including all whitespace.
 - NO prose, NO explanations — ONLY fenced code blocks.
+
+### Search/Replace Block Format Example
+```src/app.ts
+<<<<
+  app.use('/api/exports', exportRouter);
+====
+  app.use('/api/exports', exportRouter);
+  app.use('/api/imports', importRouter);
+>>>>
+```
 
 Begin.
 """
