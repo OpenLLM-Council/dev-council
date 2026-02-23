@@ -16,3 +16,6 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "rich>=14.3.2",
 ]
+
+[project.scripts]
+dev-council = "app.cli:cli_main"
