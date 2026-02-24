@@ -18,10 +18,11 @@ from app.agents.tech_stack_agent import get_tech_stack_agent
 from app.agents.tech_stack_agent import get_tech_stack_agent
 from app.agents.consensus_agent import get_consensus_agent, get_manager_decision_agent
 from app.agents.coder_agent import get_coder_agent
-from app.agents.reviewer_agent import get_reviewer_agent
+# from app.agents.reviewer_agent import get_reviewer_agent
 from app.agents.instructions_agent import get_instructions_agent
 from app.tools.llm_resources import get_available_llms, get_coder_llms
 from app.tools.file_writer import write_code_files
+from app.tools.file_reader import read_code_directory
 
 console = Console()
 
@@ -538,6 +539,19 @@ def code_milestone(state: ManagerState):
         agent = get_coder_agent(chosen_model, revision=False)
 
     with console.status("[bold green]Writing code...", spinner="dots"):
+        current_index = state.get("current_milestone_index", 0)
+        
+        # If it's a revision OR if it's a subsequent milestone, we need the existing codebase context
+        if (revision_needed and review_feedback) or current_index > 0:
+            project_path = state.get("project_path", "outputs")
+            code_dir = os.path.join(project_path, "code")
+            # Read all currently written files to provide context for revision or next milestone
+            existing_code = read_code_directory(code_dir)
+            
+            # Avoid duplicate appends if both conditions happen to overlap (they usually won't in the current flow)
+            if "## CURRENT CODEBASE" not in input_text:
+                input_text += f"\n\n## CURRENT CODEBASE\n{existing_code}"
+            
         response = agent.invoke({"input": input_text})
 
     generated_code = response.content if hasattr(response, "content") else str(response)
@@ -749,13 +763,15 @@ class ManagerAgent:
             )
 
         workflow.add_edge(START, "call_project_lead")
-        workflow.add_edge("call_project_lead", "human_review")
-        workflow.add_conditional_edges("human_review", check_review)
+        # workflow.add_edge("call_project_lead", "human_review")
+        # workflow.add_conditional_edges("human_review", check_review)
+        workflow.add_edge("call_project_lead", "call_milestone")
 
         workflow.add_edge("call_milestone", "call_flow_diagram")
         workflow.add_edge("call_flow_diagram", "call_tech_stack")
-        workflow.add_edge("call_tech_stack", "tech_stack_review")
-        workflow.add_conditional_edges("tech_stack_review", check_tech_stack_review)
+        # workflow.add_edge("call_tech_stack", "tech_stack_review")
+        # workflow.add_conditional_edges("tech_stack_review", check_tech_stack_review)
+        workflow.add_edge("call_tech_stack", "pick_milestone")
 
         for node_name in proposal_node_names:
             workflow.add_edge("pick_milestone", node_name)
@@ -763,8 +779,9 @@ class ManagerAgent:
         for node_name in proposal_node_names:
             workflow.add_edge(node_name, "manager_decision")
 
-        workflow.add_edge("manager_decision", "consensus_review")
-        workflow.add_conditional_edges("consensus_review", check_consensus_review)
+        # workflow.add_edge("manager_decision", "consensus_review")
+        # workflow.add_conditional_edges("consensus_review", check_consensus_review)
+        workflow.add_edge("manager_decision", "code_milestone")
 
         # --- Coding pipeline: generate → write → (loop or continue) ---
         workflow.add_node("code_milestone", code_milestone)
