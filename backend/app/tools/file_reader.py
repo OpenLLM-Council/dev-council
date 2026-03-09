@@ -35,3 +35,11 @@ def read_code_directory(directory: str) -> str:
                 output.append(f"### File: {relative_path}\nError reading file: {e}\n")
                 
     return "\n".join(output) if output else "No readable code files found."
+
+
+def read_file(file_path: str) -> str:
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        return f"Error reading file: {e}"
