@@ -1,4 +1,3 @@
-from langgraph.checkpoint.memory import InMemorySaver
 from langchain.agents import create_agent
 from langchain_ollama import ChatOllama
 from app.core.config import settings
@@ -54,7 +53,7 @@ Begin
 """
 
 
-def get_project_lead_agent(memory: InMemorySaver):
+def get_project_lead_agent():
     llm = ChatOllama(
         model=settings.GPT_LLM,
         base_url=settings.OLLAMA_URL,
@@ -67,7 +66,6 @@ def get_project_lead_agent(memory: InMemorySaver):
         model=llm,
         tools=tools,
         system_prompt=PROJECT_LEAD_TEMPLATE,
-        checkpointer=memory,
     )
 
     return agent
