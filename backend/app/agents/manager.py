@@ -300,6 +300,103 @@ def check_tech_stack_review(
     return "pick_milestone"
 
 
+def milestone_review(state: ManagerState):
+    """Asks the user for review of the milestones."""
+    console.rule("[bold magenta]Milestone Review[/bold magenta]")
+    project_path = state.get("project_path", "outputs")
+    console.print(
+        Panel(
+            f"[bold]Markdown:[/bold] {project_path}/milestone.md\n[bold]PDF:[/bold]      {project_path}/milestone.pdf",
+            title="[bold blue]Milestones Ready for Review[/bold blue]",
+            border_style="green",
+        )
+    )
+
+    while True:
+        decision = (
+            console.input(
+                "[bold yellow]Do you approve these milestones? (approve/edit): [/bold yellow]"
+            )
+            .strip()
+            .lower()
+        )
+        if decision == "approve":
+            console.print("[bold green]Milestones approved ✓[/bold green]")
+            return {"revision_needed": False}
+        elif decision == "edit":
+            feedback = console.input(
+                "[bold cyan]What changes should be made? [/bold cyan]"
+            ).strip()
+            if not feedback:
+                console.print(
+                    "[bold red]No feedback provided. Please try again.[/bold red]"
+                )
+                continue
+            return {"revision_needed": True, "feedback": feedback}
+        else:
+            console.print(
+                "[bold red]Invalid input. Please enter 'approve' or 'edit'.[/bold red]"
+            )
+
+
+def check_milestone_review(
+    state: ManagerState,
+) -> Literal["call_milestone", "call_flow_diagram"]:
+    if state.get("revision_needed"):
+        return "call_milestone"
+    return "call_flow_diagram"
+
+
+def flow_diagram_review(state: ManagerState):
+    """Asks the user for review of the flow diagram."""
+    console.rule("[bold magenta]Flow Diagram Review[/bold magenta]")
+    project_path = state.get("project_path", "outputs")
+    console.print(
+        Panel(
+            f"[bold]Flow Diagram:[/bold] {project_path}/flow_diagram.html",
+            title="[bold blue]Flow Diagram Ready for Review[/bold blue]",
+            border_style="green",
+        )
+    )
+
+    while True:
+        decision = (
+            console.input(
+                "[bold yellow]Do you approve this flow diagram? (approve/edit): [/bold yellow]"
+            )
+            .strip()
+            .lower()
+        )
+        if decision == "approve":
+            console.print("[bold green]Flow diagram approved ✓[/bold green]")
+            return {"revision_needed": False}
+        elif decision == "edit":
+            feedback = console.input(
+                "[bold cyan]What changes should be made? [/bold cyan]"
+            ).strip()
+            if not feedback:
+                console.print(
+                    "[bold red]No feedback provided. Please try again.[/bold red]"
+                )
+                continue
+            return {"revision_needed": True, "feedback": feedback}
+        else:
+            console.print(
+                "[bold red]Invalid input. Please enter 'approve' or 'edit'.[/bold red]"
+            )
+
+
+def check_flow_diagram_review(
+    state: ManagerState,
+) -> Literal["call_flow_diagram", "call_tech_stack"]:
+    if state.get("revision_needed"):
+        return "call_flow_diagram"
+    return "call_tech_stack"
+
+
+
+
+
 def pick_milestone(state: ManagerState):
     """Parses all milestones and prepares the first one for proposals and coding."""
     console.rule("[bold cyan]Preparing Milestones[/bold cyan]")
@@ -556,6 +653,7 @@ def code_milestone(state: ManagerState):
 
     generated_code = response.content if hasattr(response, "content") else str(response)
     console.print("[bold green]  ✓ Code generation complete[/bold green]")
+    console.print("[bold cyan]Writing code files...[/bold cyan]")
 
     attempt = state.get("code_attempt", 0) + 1
     return {
@@ -745,7 +843,9 @@ class ManagerAgent:
         workflow.add_node("call_project_lead", call_project_lead)
         workflow.add_node("human_review", human_review)
         workflow.add_node("call_milestone", call_milestone)
+        workflow.add_node("milestone_review", milestone_review)
         workflow.add_node("call_flow_diagram", call_flow_diagram)
+        workflow.add_node("flow_diagram_review", flow_diagram_review)
         workflow.add_node("call_tech_stack", call_tech_stack)
         workflow.add_node("tech_stack_review", tech_stack_review)
 
@@ -763,15 +863,22 @@ class ManagerAgent:
             )
 
         workflow.add_edge(START, "call_project_lead")
-        # workflow.add_edge("call_project_lead", "human_review")
-        # workflow.add_conditional_edges("human_review", check_review)
-        workflow.add_edge("call_project_lead", "call_milestone")
+        
+        # SRS Generation & Review
+        workflow.add_edge("call_project_lead", "human_review")
+        workflow.add_conditional_edges("human_review", check_review)
+        
+        # Milestone Generation & Review (after SRS approved)
+        workflow.add_edge("call_milestone", "milestone_review")
+        workflow.add_conditional_edges("milestone_review", check_milestone_review)
 
-        workflow.add_edge("call_milestone", "call_flow_diagram")
-        workflow.add_edge("call_flow_diagram", "call_tech_stack")
-        # workflow.add_edge("call_tech_stack", "tech_stack_review")
-        # workflow.add_conditional_edges("tech_stack_review", check_tech_stack_review)
-        workflow.add_edge("call_tech_stack", "pick_milestone")
+        # Flow Diagram Generation & Review (after Milestone approved)
+        workflow.add_edge("call_flow_diagram", "flow_diagram_review")
+        workflow.add_conditional_edges("flow_diagram_review", check_flow_diagram_review)
+
+        # Tech Stack Generation & Review (after Flow Diagram approved)
+        workflow.add_edge("call_tech_stack", "tech_stack_review")
+        workflow.add_conditional_edges("tech_stack_review", check_tech_stack_review)
 
         for node_name in proposal_node_names:
             workflow.add_edge("pick_milestone", node_name)
@@ -779,11 +886,11 @@ class ManagerAgent:
         for node_name in proposal_node_names:
             workflow.add_edge(node_name, "manager_decision")
 
-        # workflow.add_edge("manager_decision", "consensus_review")
-        # workflow.add_conditional_edges("consensus_review", check_consensus_review)
-        workflow.add_edge("manager_decision", "code_milestone")
+        # Manager Decision → Consensus Review → Code Milestone
+        workflow.add_edge("manager_decision", "consensus_review")
+        workflow.add_conditional_edges("consensus_review", check_consensus_review)
 
-        # --- Coding pipeline: generate → write → (loop or continue) ---
+        # --- Coding pipeline: generate → review → write → run_instructions → (loop or continue) ---
         workflow.add_node("code_milestone", code_milestone)
         workflow.add_node("write_code_to_disk", write_code_to_disk)
         workflow.add_node("generate_run_instructions", generate_run_instructions)
