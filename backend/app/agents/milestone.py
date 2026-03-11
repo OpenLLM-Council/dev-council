@@ -41,7 +41,7 @@ Your FINAL output MUST be a **Markdown file** with:
   - A checkbox
   - A concise task description
   - One assigned LLM
-Give only maximum 3 milestones, try to complete all things in 3 milestones only .
+Give only maximum 5 milestones, try to complete all things in 5 milestones only .
 ### TABLE FORMAT (EXACT)
 
 | Milestone | Description | LLM |

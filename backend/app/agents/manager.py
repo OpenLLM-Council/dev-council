@@ -63,7 +63,7 @@ class ManagerState(TypedDict):
     project_path: str
     chosen_approach: str
     chosen_llm_model: str
-    coder_memory: Any
+
     generated_code: str
     review_feedback: str
     code_approved: bool
@@ -636,38 +636,22 @@ def code_milestone(state: ManagerState):
     project_path = state.get("project_path", "outputs")
     code_dir = os.path.join(project_path, "code")
 
-    # Resolve the chosen LLM model
     chosen_model = state.get("chosen_llm_model") or _extract_chosen_llm_model(
         chosen_approach
     )
 
     console.print(f"[bold blue]  ➤ Coding with model: {chosen_model}[/bold blue]")
 
-    # --- Pre-collect context so the LLM only needs to OUTPUT code ---
+    # Set the code directory so the write_file tool knows where to write
+    from app.agents.coder_agent import set_code_dir
+    set_code_dir(code_dir)
 
-    # 1. File tree snapshot
-    from app.tools.file_tree import show_tree as _show_tree
-    file_tree_str = _show_tree.invoke(code_dir)
-    file_tree_section = f"## CURRENT FILE TREE\n```\n{file_tree_str}\n```"
-
-    # 2. Existing codebase
-    existing_code = read_code_directory(code_dir)
-    _empty = {"No readable files found in directory.", "Directory does not exist."}
-    existing_code_section = (
-        f"## CURRENT CODEBASE\n{existing_code}"
-        if existing_code not in _empty else ""
-    )
-
-    # 3. Persistent memory context
-    memory_context_section = ""
-    coder_memory = state.get("coder_memory")
-    if coder_memory is not None:
-        memory_context = coder_memory.read_context()
-        if memory_context:
-            memory_context_section = f"## CURRENT PROGRESS MEMORY\n{memory_context}"
+    memory_dir = os.path.join(project_path, ".memory")
 
     if revision_needed and review_feedback:
         input_text = (
+            f"## Memory Directory\n{memory_dir}\n\n"
+            f"## Code Directory\n{code_dir}\n\n"
             f"## Milestone\n{milestone}\n\n"
             f"## Chosen Approach (from Consensus)\n{chosen_approach}\n\n"
             f"## Approved Tech Stack\n{tech_stack}\n\n"
@@ -677,24 +661,40 @@ def code_milestone(state: ManagerState):
         agent = get_coder_agent(chosen_model, revision=True)
     else:
         input_text = (
+            f"## Memory Directory\n{memory_dir}\n\n"
+            f"## Code Directory\n{code_dir}\n\n"
             f"## Milestone\n{milestone}\n\n"
             f"## Chosen Approach (from Consensus)\n{chosen_approach}\n\n"
             f"## Approved Tech Stack\n{tech_stack}\n\n"
-            f"## Project SRS (context)\n{project_plan}"
         )
         agent = get_coder_agent(chosen_model, revision=False)
 
-    # Prepend all context sections (memory → tree → existing code → task)
-    context_parts = [s for s in [memory_context_section, file_tree_section, existing_code_section] if s]
-    if context_parts:
-        input_text = "\n\n".join(context_parts) + "\n\n" + input_text
-
-    with console.status("[bold green]Writing code...", spinner="dots"):
-        response = agent.invoke({"input": input_text})
+    console.print("[bold green]Writing code...[/bold green]")
+    written_files = []
+    response = None
+    for chunk in agent.stream({"messages": [HumanMessage(content=input_text)]}):
+        for node_name, node_output in chunk.items():
+            messages = node_output.get("messages", [])
+            for msg in messages:
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        tool_name = tc['name']
+                        args = tc['args']
+                        if tool_name == "write_file":
+                            console.print(f"[bold green]  📝 Writing: {args.get('file_path', '')}[/bold green]")
+                        else:
+                            console.print(f"[dim]  🔧 {tool_name}({args})[/dim]")
+                elif hasattr(msg, "type") and msg.type == "tool":
+                    if msg.name == "write_file":
+                        console.print(f"[dim]    {msg.content}[/dim]")
+                        written_files.append(msg.content)
+                    else:
+                        preview = (msg.content[:120] + "...") if len(msg.content) > 120 else msg.content
+                        console.print(f"[dim]  ← {msg.name}: {preview}[/dim]")
+        response = chunk
 
     generated_code = extract_text(response)
-    console.print("[bold green]  ✓ Code generation complete[/bold green]")
-    console.print("[bold cyan]Writing code files...[/bold cyan]")
+    console.print(f"[bold green]  ✓ Code generation complete — {len(written_files)} file(s) written[/bold green]")
 
     attempt = state.get("code_attempt", 0) + 1
     return {
@@ -706,26 +706,15 @@ def code_milestone(state: ManagerState):
 
 
 def write_code_to_disk(state: ManagerState):
-    """Writes the approved code files to the project directory."""
-    console.rule("[bold cyan]Writing Code Files[/bold cyan]")
+    """Handles any remaining memory updates after agent writing."""
+    console.rule("[bold cyan]Finalizing Code Files[/bold cyan]")
 
-    generated_code = state.get("generated_code", "")
     project_path = state.get("project_path", "outputs")
-    folder = state.get("milestone_folder", "milestone_1")
 
-    code_dir = os.path.join(project_path, "code")
-    written = write_code_files(generated_code, code_dir)
-
-    console.print(
-        f"[bold green]  ✓ Written {len(written)} file(s) to {code_dir}[/bold green]"
-    )
-    for f in written:
-        console.print(f"[dim]    {f}[/dim]")
-
-    coder_memory = state.get("coder_memory")
-    if coder_memory is not None:
-        coder_memory.update_tree()
-        console.print("[dim]  .memory/tree.md updated[/dim]")
+    from app.memory.coder_memory import CoderMemory
+    coder_memory = CoderMemory(project_path)
+    coder_memory.update_tree()
+    console.print("[dim]  .memory/tree.md updated[/dim]")
 
     return {}
 
@@ -792,10 +781,11 @@ def user_run_review(state: ManagerState):
 
             current_milestone = state.get("current_milestone", "")
 
-            coder_memory = state.get("coder_memory")
-            if coder_memory is not None:
-                coder_memory.update_progress(current_milestone)
-                console.print("[dim]  .memory/progress.md updated[/dim]")
+            from app.memory.coder_memory import CoderMemory
+            project_path = state.get("project_path", "outputs")
+            coder_memory = CoderMemory(project_path)
+            coder_memory.update_progress(current_milestone)
+            console.print("[dim]  .memory/progress.md updated[/dim]")
 
             milestones_text = state.get("milestones", "")
             if current_milestone in milestones_text:
@@ -966,7 +956,10 @@ class ManagerAgent:
         if resume:
             self.app.invoke(None, config=config)
         else:
-            initial_state = {"input": user_query, "project_path": project_path}
+            initial_state = {
+                "input": user_query,
+                "project_path": project_path,
+            }
             self.app.invoke(initial_state, config=config)
 
         console.rule("[bold green]Process Completed Successfully[/bold green]")
