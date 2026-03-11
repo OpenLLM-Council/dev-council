@@ -837,7 +837,7 @@ def check_user_run_review(
 
 
 class ManagerAgent:
-    def __init__(self):
+    def __init__(self, checkpointer=None):
         workflow = StateGraph(ManagerState)
 
         workflow.add_node("call_project_lead", call_project_lead)
@@ -901,9 +901,9 @@ class ManagerAgent:
         workflow.add_edge("generate_run_instructions", "user_run_review")
         workflow.add_conditional_edges("user_run_review", check_user_run_review)
 
-        self.app = workflow.compile()
+        self.app = workflow.compile(checkpointer=checkpointer)
 
-    def process_request(self, user_query: str, project_path: str):
+    def process_request(self, user_query: str, project_path: str, config: dict = None, resume: bool = False):
         title = pyfiglet.figlet_format("dev-council", font="slant")
         console.print(Text(title, style="bold magenta"))
 
@@ -911,12 +911,14 @@ class ManagerAgent:
         console.print(f"[bold]Requests:[/bold] {user_query}")
         console.print(f"[bold]Project Path:[/bold] {project_path}")
 
-        initial_state = {"input": user_query, "project_path": project_path}
-
-        self.app.invoke(initial_state)
+        if resume:
+            self.app.invoke(None, config=config)
+        else:
+            initial_state = {"input": user_query, "project_path": project_path}
+            self.app.invoke(initial_state, config=config)
 
         console.rule("[bold green]Process Completed Successfully[/bold green]")
 
 
-def get_manager():
-    return ManagerAgent()
+def get_manager(checkpointer=None):
+    return ManagerAgent(checkpointer=checkpointer)
