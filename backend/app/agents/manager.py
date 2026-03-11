@@ -181,26 +181,52 @@ def call_milestone(state: ManagerState):
 
 def call_flow_diagram(state: ManagerState):
     """Generates a flow diagram based on the plan."""
-    console.rule("[bold cyan]Generating Flow Diagram[/bold cyan]")
-    with console.status("[bold green]Designing system flow...", spinner="dots"):
-        flow_diagram_agent = get_flow_diagram_agent()
-        project_plan = state["project_plan"]
+    import concurrent.futures
 
-        response = flow_diagram_agent.invoke(
-            {"input": ("Create a flow diagram based on this:\n\n" f"{project_plan}")}
-        )
-        flow_diagram_code = extract_text(response)
+    console.rule("[bold cyan]Generating Architecture Diagrams[/bold cyan]")
+    project_plan = state["project_plan"]
+    flow_diagram_agent = get_flow_diagram_agent()
 
-        if not flow_diagram_code.strip().startswith("graph"):
-            console.print(
-                "[bold red]Warning: unexpected Mermaid code format[/bold red]"
-            )
+    diagram_types = [
+        "Sequence diagram",
+        "Usecase diagram",
+        "Class diagram",
+        "Object diagram",
+        "Activity diagram",
+        "Component diagram",
+        "Deployment diagram",
+        "State diagram",
+        "Timing diagram"
+    ]
+
+    all_diagrams = {}
+    with console.status("[bold green]Designing system diagrams in parallel...", spinner="dots"):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(diagram_types)) as executor:
+            future_to_dtype = {
+                executor.submit(
+                    flow_diagram_agent.invoke,
+                    {"diagram_type": dtype, "input": f"Create a {dtype} based on this:\n\n{project_plan}"}
+                ): dtype 
+                for dtype in diagram_types
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_dtype):
+                dtype = future_to_dtype[future]
+                try:
+                    response = future.result()
+                    code = extract_text(response)
+                    all_diagrams[dtype] = code
+                except Exception as exc:
+                    console.print(f"[bold red]Diagram {dtype} generated an exception: {exc}[/bold red]")
 
         project_path = state.get("project_path", "outputs")
-        generate_flow_diagram(flow_diagram_code, project_path)
+        generate_flow_diagram(all_diagrams, project_path)
 
-    console.print("[bold green]✓ Flow diagram generated[/bold green]")
-    return {"flow_diagram_code": flow_diagram_code}
+    console.print("[bold green]✓ Architecture diagrams generated[/bold green]")
+    
+    # Store combined text for reference
+    all_diagrams_code = "\\n\\n".join([f"<!-- {kbd} -->\\n{v}" for kbd, v in all_diagrams.items()])
+    return {"flow_diagram_code": all_diagrams_code}
 
 
 def call_tech_stack(state: ManagerState):

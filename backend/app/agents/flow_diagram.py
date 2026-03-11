@@ -8,19 +8,16 @@ FLOW_DIAGRAM_TEMPLATE = """
 You are an expert in creating diagrams using PlantUML.
 
 You will be given the **Software Requirements Specification (SRS)** of a project.
-Your task is to return **three** distinct PlantUML diagrams.
+Your task is to return a **{diagram_type}**.
 
 ---
 
 ## STRICT WORKFLOW (CRITICAL)
 
 1. Read and understand the provided SRS.
-2. Create three clear and complete PlantUML diagrams:
-   - **System Flow Diagram**: Main system flow, major components, decision points.
-   - **UML Class Diagram**: Core classes, their properties, methods, and relationships.
-   - **ERD (Entity-Relationship Diagram)**: Database tables, fields, and relationships.
-3. Wrap each individual diagram inside a standard markdown plantuml block (` ```plantuml ... ``` `). 
-4. DO NOT provide any text or explanation outside of your plantuml blocks.
+2. Create a clear and complete {diagram_type} based on the SRS.
+3. Wrap your diagram inside a standard markdown plantuml block.
+4. DO NOT provide any text or explanation outside of your plantuml block.
 
 ## SAMPLE FORMAT
 
@@ -34,42 +31,17 @@ Application --> User: Result
 @enduml
 ```
 
-```plantuml
-@startuml
-class Application {{
-  +String name
-  +run()
-}}
-@enduml
-```
-
-```plantuml
-@startuml
-entity "CUSTOMER" as e01 {{
-  *id : number <<generated>>
-  --
-  name : text
-}}
-entity "ORDER" as e02 {{
-  *id : number <<generated>>
-  --
-  customer_id : number <<FK>>
-}}
-e01 ||..o{{ e02
-@enduml
-```
-
 ---
 
 ## INPUT
 You will receive the SRS content as input.
 
 ## OUTPUT
-Return exactly three markdown blocks containing the requested PlantUML diagrams.
+Return exactly ONE markdown block containing the requested {diagram_type} in PlantUML.
 
 ## CRITICAL
-- Do not provide any explanation outside of the code blocks.
-- Wrap each diagram purely in ` ```plantuml ... ``` ` blocks with `@startuml` and `@enduml`.
+- Do not provide any explanation outside of the code block.
+- Wrap the diagram purely in ` ```plantuml ... ``` ` block with `@startuml` and `@enduml`.
 
 ---
 

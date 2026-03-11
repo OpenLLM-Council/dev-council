@@ -20,20 +20,35 @@ def extract_plantuml_blocks(code: str) -> list[str]:
     return [b.strip() for b in blocks if b.strip()]
 
 
-def generate_flow_diagram(mermaid_code: str, project_path: str) -> str:
+def generate_flow_diagram(mermaid_code: dict | str, project_path: str) -> str:
     """Generate flow diagrams as HTML with embedded PlantUML diagrams."""
-    if hasattr(mermaid_code, "content"):
-        mermaid_code = mermaid_code.content
-
-    blocks = extract_plantuml_blocks(mermaid_code)
     
+    # Normalize input and extract valid blocks
+    diagram_blocks = {}
+    if isinstance(mermaid_code, dict):
+        for dtype, content in mermaid_code.items():
+            if hasattr(content, "content"):
+                content = content.content
+            extracted = extract_plantuml_blocks(content)
+            if extracted:
+                diagram_blocks[dtype] = extracted[0]
+            else:
+                diagram_blocks[dtype] = content
+    else:
+        # Backward compatibility for flat strings
+        if hasattr(mermaid_code, "content"):
+            mermaid_code = mermaid_code.content
+        blocks = extract_plantuml_blocks(mermaid_code)
+        for i, block in enumerate(blocks, 1):
+            diagram_blocks[f"Diagram {i}"] = block
+
     os.makedirs(f"{project_path}", exist_ok=True)
     
     plantuml_server = PlantUML(url='http://www.plantuml.com/plantuml/svg/')
     
     # Generate HTML file with multiple PlantUML diagrams
     divs = ""
-    for idx, block in enumerate(blocks, 1):
+    for dtype, block in diagram_blocks.items():
         try:
             # We construct the image URL. Ensure block starts with @startuml
             clean_block = block
@@ -43,14 +58,14 @@ def generate_flow_diagram(mermaid_code: str, project_path: str) -> str:
             img_url = plantuml_server.get_url(clean_block)
             divs += f'''
             <div class="diagram-section">
-                <h2>Diagram {idx}</h2>
+                <h2>{dtype}</h2>
                 <div class="plantuml-diagram">
-                    <img src="{img_url}" alt="PlantUML Diagram {idx}" style="max-width: 100%; height: auto; border: 1px solid #ddd; padding: 10px; border-radius: 4px; background: white;" />
+                    <img src="{img_url}" alt="PlantUML {dtype}" style="max-width: 100%; height: auto; border: 1px solid #ddd; padding: 10px; border-radius: 4px; background: white;" />
                 </div>
             </div>
             '''
         except Exception as e:
-            print(f"Failed to generate PlantUML for block {idx}: {e}")
+            print(f"Failed to generate PlantUML for block {dtype}: {e}")
 
     html_content = f"""<!DOCTYPE html>
 <html>
