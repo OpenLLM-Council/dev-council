@@ -1,3 +1,3 @@
-from langgraph.checkpoint.memory import InMemorySaver
+from app.memory.coder_memory import CoderMemory
 
-memory = InMemorySaver()
+__all__ = ["CoderMemory"]

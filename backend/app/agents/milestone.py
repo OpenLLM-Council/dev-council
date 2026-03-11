@@ -1,4 +1,3 @@
-from langgraph.checkpoint.memory import InMemorySaver
 from app.structured_outputs.milestone import MilestoneOutput
 from app.tools.save_file import save_file
 from langchain.agents import create_agent
@@ -68,7 +67,7 @@ Begin.
 """
 
 
-def get_milestone_agent(memory: InMemorySaver):
+def get_milestone_agent():
     llm = ChatOllama(
         model=settings.GPT_LLM,
         base_url=settings.OLLAMA_URL,
@@ -79,7 +78,6 @@ def get_milestone_agent(memory: InMemorySaver):
         model=llm,
         tools=tools,
         system_prompt=MILESTONE_TEMPLATE,
-        checkpointer=memory,
     )
 
     return agent

@@ -1,6 +1,5 @@
 import os
-from langgraph.checkpoint.memory import InMemorySaver
-from typing import TypedDict, Literal, Annotated
+from typing import TypedDict, Literal, Annotated, Any
 
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import StateGraph, END, START
@@ -18,7 +17,6 @@ from app.agents.tech_stack_agent import get_tech_stack_agent
 from app.agents.tech_stack_agent import get_tech_stack_agent
 from app.agents.consensus_agent import get_consensus_agent, get_manager_decision_agent
 from app.agents.coder_agent import get_coder_agent
-# from app.agents.reviewer_agent import get_reviewer_agent
 from app.agents.instructions_agent import get_instructions_agent
 from app.tools.llm_resources import get_available_llms, get_coder_llms
 from app.tools.file_writer import write_code_files
@@ -65,7 +63,7 @@ class ManagerState(TypedDict):
     project_path: str
     chosen_approach: str
     chosen_llm_model: str
-    memory: InMemorySaver
+    coder_memory: Any
     generated_code: str
     review_feedback: str
     code_approved: bool
@@ -76,7 +74,7 @@ class ManagerState(TypedDict):
 
 def call_project_lead(state: ManagerState):
     """Generates or revises the project plan."""
-    project_lead = get_project_lead_agent(memory=state.get("memory"))
+    project_lead = get_project_lead_agent()
     user_query = state.get("input")
     revision_needed = state.get("revision_needed", False)
     current_plan = state.get("project_plan", "")
@@ -128,12 +126,12 @@ def human_review(state: ManagerState):
     while True:
         decision = (
             console.input(
-                "[bold yellow]Do you approve this SRS? (approve/edit): [/bold yellow]"
+                "[bold yellow]Approve this SRS? (Press Enter to approve, or type 'edit'): [/bold yellow]"
             )
             .strip()
             .lower()
         )
-        if decision == "approve":
+        if decision == "":
             console.print("[bold green]SRS approved ✓[/bold green]")
             return {"revision_needed": False}
         elif decision == "edit":
@@ -148,7 +146,7 @@ def human_review(state: ManagerState):
             return {"revision_needed": True, "feedback": feedback}
         else:
             console.print(
-                "[bold red]Invalid input. Please enter 'approve' or 'edit'.[/bold red]"
+                "[bold red]Press Enter to approve, or type 'edit'.[/bold red]"
             )
 
 
@@ -156,7 +154,7 @@ def call_milestone(state: ManagerState):
     """Generates milestones based on the plan."""
     console.rule("[bold cyan]Generating Milestones[/bold cyan]")
     with console.status("[bold green]Analyzing plan...", spinner="dots"):
-        milestone_agent = get_milestone_agent(memory=state.get("memory"))
+        milestone_agent = get_milestone_agent()
         project_plan = state["project_plan"]
 
         response = milestone_agent.invoke(
@@ -205,7 +203,7 @@ def call_flow_diagram(state: ManagerState):
 
 def call_tech_stack(state: ManagerState):
     """Generates or revises a tech stack based on the SRS document."""
-    tech_stack_agent = get_tech_stack_agent(memory=state.get("memory"))
+    tech_stack_agent = get_tech_stack_agent()
     project_plan = state["project_plan"]
     revision_needed = state.get("revision_needed", False)
     current_tech_stack = state.get("tech_stack", "")
@@ -262,12 +260,12 @@ def tech_stack_review(state: ManagerState):
     while True:
         decision = (
             console.input(
-                "[bold yellow]Do you approve this Tech Stack? (approve/edit): [/bold yellow]"
+                "[bold yellow]Approve this Tech Stack? (Press Enter to approve, or type 'edit'): [/bold yellow]"
             )
             .strip()
             .lower()
         )
-        if decision == "approve":
+        if decision == "":
             console.print("[bold green]Tech Stack approved ✓[/bold green]")
             return {"revision_needed": False}
         elif decision == "edit":
@@ -282,7 +280,7 @@ def tech_stack_review(state: ManagerState):
             return {"revision_needed": True, "feedback": feedback}
         else:
             console.print(
-                "[bold red]Invalid input. Please enter 'approve' or 'edit'.[/bold red]"
+                "[bold red]Press Enter to approve, or type 'edit'.[/bold red]"
             )
 
 
@@ -315,12 +313,12 @@ def milestone_review(state: ManagerState):
     while True:
         decision = (
             console.input(
-                "[bold yellow]Do you approve these milestones? (approve/edit): [/bold yellow]"
+                "[bold yellow]Approve these milestones? (Press Enter to approve, or type 'edit'): [/bold yellow]"
             )
             .strip()
             .lower()
         )
-        if decision == "approve":
+        if decision == "":
             console.print("[bold green]Milestones approved ✓[/bold green]")
             return {"revision_needed": False}
         elif decision == "edit":
@@ -335,7 +333,7 @@ def milestone_review(state: ManagerState):
             return {"revision_needed": True, "feedback": feedback}
         else:
             console.print(
-                "[bold red]Invalid input. Please enter 'approve' or 'edit'.[/bold red]"
+                "[bold red]Press Enter to approve, or type 'edit'.[/bold red]"
             )
 
 
@@ -362,12 +360,12 @@ def flow_diagram_review(state: ManagerState):
     while True:
         decision = (
             console.input(
-                "[bold yellow]Do you approve this flow diagram? (approve/edit): [/bold yellow]"
+                "[bold yellow]Approve this flow diagram? (Press Enter to approve, or type 'edit'): [/bold yellow]"
             )
             .strip()
             .lower()
         )
-        if decision == "approve":
+        if decision == "":
             console.print("[bold green]Flow diagram approved ✓[/bold green]")
             return {"revision_needed": False}
         elif decision == "edit":
@@ -382,7 +380,7 @@ def flow_diagram_review(state: ManagerState):
             return {"revision_needed": True, "feedback": feedback}
         else:
             console.print(
-                "[bold red]Invalid input. Please enter 'approve' or 'edit'.[/bold red]"
+                "[bold red]Press Enter to approve, or type 'edit'.[/bold red]"
             )
 
 
@@ -547,12 +545,12 @@ def consensus_review(state: ManagerState):
     while True:
         decision = (
             console.input(
-                "[bold yellow]Do you approve this decision? (approve/edit): [/bold yellow]"
+                "[bold yellow]Approve this decision? (Press Enter to approve, or type 'edit'): [/bold yellow]"
             )
             .strip()
             .lower()
         )
-        if decision == "approve":
+        if decision == "":
             console.print("[bold green]Consensus decision approved ✓[/bold green]")
             return {"revision_needed": False}
         elif decision == "edit":
@@ -567,7 +565,7 @@ def consensus_review(state: ManagerState):
             return {"revision_needed": True, "feedback": feedback}
         else:
             console.print(
-                "[bold red]Invalid input. Please enter 'approve' or 'edit'.[/bold red]"
+                "[bold red]Press Enter to approve, or type 'edit'.[/bold red]"
             )
 
 
@@ -609,6 +607,8 @@ def code_milestone(state: ManagerState):
     project_plan = state.get("project_plan", "")
     review_feedback = state.get("review_feedback", "")
     revision_needed = state.get("revision_needed", False)
+    project_path = state.get("project_path", "outputs")
+    code_dir = os.path.join(project_path, "code")
 
     # Resolve the chosen LLM model
     chosen_model = state.get("chosen_llm_model") or _extract_chosen_llm_model(
@@ -616,6 +616,29 @@ def code_milestone(state: ManagerState):
     )
 
     console.print(f"[bold blue]  ➤ Coding with model: {chosen_model}[/bold blue]")
+
+    # --- Pre-collect context so the LLM only needs to OUTPUT code ---
+
+    # 1. File tree snapshot
+    from app.tools.file_tree import show_tree as _show_tree
+    file_tree_str = _show_tree.invoke(code_dir)
+    file_tree_section = f"## CURRENT FILE TREE\n```\n{file_tree_str}\n```"
+
+    # 2. Existing codebase
+    existing_code = read_code_directory(code_dir)
+    _empty = {"No readable files found in directory.", "Directory does not exist."}
+    existing_code_section = (
+        f"## CURRENT CODEBASE\n{existing_code}"
+        if existing_code not in _empty else ""
+    )
+
+    # 3. Persistent memory context
+    memory_context_section = ""
+    coder_memory = state.get("coder_memory")
+    if coder_memory is not None:
+        memory_context = coder_memory.read_context()
+        if memory_context:
+            memory_context_section = f"## CURRENT PROGRESS MEMORY\n{memory_context}"
 
     if revision_needed and review_feedback:
         input_text = (
@@ -635,23 +658,15 @@ def code_milestone(state: ManagerState):
         )
         agent = get_coder_agent(chosen_model, revision=False)
 
+    # Prepend all context sections (memory → tree → existing code → task)
+    context_parts = [s for s in [memory_context_section, file_tree_section, existing_code_section] if s]
+    if context_parts:
+        input_text = "\n\n".join(context_parts) + "\n\n" + input_text
+
     with console.status("[bold green]Writing code...", spinner="dots"):
-        current_index = state.get("current_milestone_index", 0)
-        
-        # If it's a revision OR if it's a subsequent milestone, we need the existing codebase context
-        if (revision_needed and review_feedback) or current_index > 0:
-            project_path = state.get("project_path", "outputs")
-            code_dir = os.path.join(project_path, "code")
-            # Read all currently written files to provide context for revision or next milestone
-            existing_code = read_code_directory(code_dir)
-            
-            # Avoid duplicate appends if both conditions happen to overlap (they usually won't in the current flow)
-            if "## CURRENT CODEBASE" not in input_text:
-                input_text += f"\n\n## CURRENT CODEBASE\n{existing_code}"
-            
         response = agent.invoke({"input": input_text})
 
-    generated_code = response.content if hasattr(response, "content") else str(response)
+    generated_code = extract_text(response)
     console.print("[bold green]  ✓ Code generation complete[/bold green]")
     console.print("[bold cyan]Writing code files...[/bold cyan]")
 
@@ -680,6 +695,11 @@ def write_code_to_disk(state: ManagerState):
     )
     for f in written:
         console.print(f"[dim]    {f}[/dim]")
+
+    coder_memory = state.get("coder_memory")
+    if coder_memory is not None:
+        coder_memory.update_tree()
+        console.print("[dim]  .memory/tree.md updated[/dim]")
 
     return {}
 
@@ -745,6 +765,12 @@ def user_run_review(state: ManagerState):
             console.print("[bold green]Great! Milestone complete ✓[/bold green]")
 
             current_milestone = state.get("current_milestone", "")
+
+            coder_memory = state.get("coder_memory")
+            if coder_memory is not None:
+                coder_memory.update_progress(current_milestone)
+                console.print("[dim]  .memory/progress.md updated[/dim]")
+
             milestones_text = state.get("milestones", "")
             if current_milestone in milestones_text:
                 updated_milestone_desc = (
@@ -837,7 +863,7 @@ def check_user_run_review(
 
 
 class ManagerAgent:
-    def __init__(self):
+    def __init__(self, checkpointer=None):
         workflow = StateGraph(ManagerState)
 
         workflow.add_node("call_project_lead", call_project_lead)
@@ -864,19 +890,15 @@ class ManagerAgent:
 
         workflow.add_edge(START, "call_project_lead")
         
-        # SRS Generation & Review
         workflow.add_edge("call_project_lead", "human_review")
         workflow.add_conditional_edges("human_review", check_review)
         
-        # Milestone Generation & Review (after SRS approved)
         workflow.add_edge("call_milestone", "milestone_review")
         workflow.add_conditional_edges("milestone_review", check_milestone_review)
 
-        # Flow Diagram Generation & Review (after Milestone approved)
         workflow.add_edge("call_flow_diagram", "flow_diagram_review")
         workflow.add_conditional_edges("flow_diagram_review", check_flow_diagram_review)
 
-        # Tech Stack Generation & Review (after Flow Diagram approved)
         workflow.add_edge("call_tech_stack", "tech_stack_review")
         workflow.add_conditional_edges("tech_stack_review", check_tech_stack_review)
 
@@ -886,11 +908,9 @@ class ManagerAgent:
         for node_name in proposal_node_names:
             workflow.add_edge(node_name, "manager_decision")
 
-        # Manager Decision → Consensus Review → Code Milestone
         workflow.add_edge("manager_decision", "consensus_review")
         workflow.add_conditional_edges("consensus_review", check_consensus_review)
 
-        # --- Coding pipeline: generate → review → write → run_instructions → (loop or continue) ---
         workflow.add_node("code_milestone", code_milestone)
         workflow.add_node("write_code_to_disk", write_code_to_disk)
         workflow.add_node("generate_run_instructions", generate_run_instructions)
@@ -901,9 +921,11 @@ class ManagerAgent:
         workflow.add_edge("generate_run_instructions", "user_run_review")
         workflow.add_conditional_edges("user_run_review", check_user_run_review)
 
-        self.app = workflow.compile()
+        self.app = workflow.compile(checkpointer=checkpointer)
 
-    def process_request(self, user_query: str, project_path: str):
+    def process_request(self, user_query: str, project_path: str, config: dict = None, resume: bool = False):
+        from app.memory.coder_memory import CoderMemory
+
         title = pyfiglet.figlet_format("dev-council", font="slant")
         console.print(Text(title, style="bold magenta"))
 
@@ -911,12 +933,18 @@ class ManagerAgent:
         console.print(f"[bold]Requests:[/bold] {user_query}")
         console.print(f"[bold]Project Path:[/bold] {project_path}")
 
-        initial_state = {"input": user_query, "project_path": project_path}
+        coder_memory = CoderMemory(project_path)
+        coder_memory.initialize()
+        console.print(f"[dim]  Coder memory initialized at {coder_memory.memory_dir}[/dim]")
 
-        self.app.invoke(initial_state)
+        if resume:
+            self.app.invoke(None, config=config)
+        else:
+            initial_state = {"input": user_query, "project_path": project_path}
+            self.app.invoke(initial_state, config=config)
 
         console.rule("[bold green]Process Completed Successfully[/bold green]")
 
 
-def get_manager():
-    return ManagerAgent()
+def get_manager(checkpointer=None):
+    return ManagerAgent(checkpointer=checkpointer)
