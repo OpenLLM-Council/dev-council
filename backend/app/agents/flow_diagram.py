@@ -5,30 +5,31 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 
 FLOW_DIAGRAM_TEMPLATE = """
-You are an expert in creating flow diagrams using Mermaid.
+You are an expert in creating diagrams using PlantUML.
 
 You will be given the **Software Requirements Specification (SRS)** of a project.
-Your task is to return a **mermaid code** that represents the system workflow.
+Your task is to return a **{diagram_type}**.
 
 ---
 
 ## STRICT WORKFLOW (CRITICAL)
 
 1. Read and understand the provided SRS.
-2. Create a clear and complete **Mermaid flow diagram** representing:
-   - Main system flow
-   - Major components
-   - Decision points (if any)
-3. Don't use ```mermaid\n and ``` at the end of the code.
-4. Just return the string of mermaid code.
+2. Create a clear and complete {diagram_type} based on the SRS.
+3. Wrap your diagram inside a standard markdown plantuml block.
+4. DO NOT provide any text or explanation outside of your plantuml block.
 
-## SAMPLE CODE
+## SAMPLE FORMAT
 
-graph LR
-    A[Square Rect] -- Link text --> B((Circle))
-    A --> C(Round Rect)
-    B --> D{{Rhombus}}
-    C --> D
+```plantuml
+@startuml
+actor User
+User -> Application: Requests
+Application -> Database: Query
+Database --> Application: Response
+Application --> User: Result
+@enduml
+```
 
 ---
 
@@ -36,12 +37,11 @@ graph LR
 You will receive the SRS content as input.
 
 ## OUTPUT
-Return the mermaid code for the flow diagram which should follow the sample code.
+Return exactly ONE markdown block containing the requested {diagram_type} in PlantUML.
 
 ## CRITICAL
-- Don't provide response in bullet points or numbered list.
-- Don't provide any explanation.
-- Just return the mermaid code as a string.
+- Do not provide any explanation outside of the code block.
+- Wrap the diagram purely in ` ```plantuml ... ``` ` block with `@startuml` and `@enduml`.
 
 ---
 
