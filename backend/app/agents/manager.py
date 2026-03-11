@@ -642,16 +642,20 @@ def code_milestone(state: ManagerState):
 
     console.print(f"[bold blue]  ➤ Coding with model: {chosen_model}[/bold blue]")
 
-    # Set the code directory so the write_file tool knows where to write
-    from app.agents.coder_agent import set_code_dir
-    set_code_dir(code_dir)
-
+    from app.agents.coder_agent import set_directories
     memory_dir = os.path.join(project_path, ".memory")
+    set_directories(code_dir, memory_dir)
+
+    from app.tools.file_reader import _file_cache
+    _file_cache.clear()
+
+    from app.tools.file_tree import show_tree
+    current_tree = show_tree.invoke({"start_path": "."})
 
     if revision_needed and review_feedback:
         input_text = (
-            f"## Memory Directory\n{memory_dir}\n\n"
             f"## Code Directory\n{code_dir}\n\n"
+            f"## Existing Code Structure\n{current_tree}\n\n"
             f"## Milestone\n{milestone}\n\n"
             f"## Chosen Approach (from Consensus)\n{chosen_approach}\n\n"
             f"## Approved Tech Stack\n{tech_stack}\n\n"
@@ -661,8 +665,8 @@ def code_milestone(state: ManagerState):
         agent = get_coder_agent(chosen_model, revision=True)
     else:
         input_text = (
-            f"## Memory Directory\n{memory_dir}\n\n"
             f"## Code Directory\n{code_dir}\n\n"
+            f"## Existing Code Structure\n{current_tree}\n\n"
             f"## Milestone\n{milestone}\n\n"
             f"## Chosen Approach (from Consensus)\n{chosen_approach}\n\n"
             f"## Approved Tech Stack\n{tech_stack}\n\n"
