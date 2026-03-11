@@ -21,7 +21,7 @@ def run():
 
     manager = get_manager(checkpointer=saver)
 
-    config = {"configurable": {"thread_id": "1"}}
+    config = {"configurable": {"thread_id": "2"}}
     # Check if there is an existing checkpoint
     try:
         existing_state = saver.get_tuple(config)

@@ -1,111 +1,169 @@
 from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
+from langchain.tools import tool
 from app.core.config import settings
+from app.tools.file_tree import show_tree
+from app.tools.file_reader import read_file, read_directory
+from app.tools.file_writer import apply_search_replace_blocks
+import os
 
-CODER_SYSTEM_PROMPT = """You are a senior software developer assigned to implement a specific milestone.
+_code_dir: str = ""
 
-You will receive:
-- The **milestone** description
-- The **chosen implementation approach** (Consensus)
-- The **tech stack**
-- The **project SRS** for context
-- **CURRENT PROGRESS MEMORY**: base path, current file tree, milestone progress
-- (Optional) **CURRENT CODEBASE** if files already exist
 
-## OUTPUT FORMAT (STRICT)
+def set_code_dir(path: str):
+    """Called by manager.py to set the output code directory for the write_file tool."""
+    global _code_dir
+    _code_dir = path
 
-Output ONLY code files using fenced code blocks.
-The fenced code block MUST use the EXACT relative file path as the language label.
-Do NOT use "python" or "javascript" as the label.
 
-Examples of correct code blocks:
+@tool
+def read_memory(memory_dir: str) -> str:
+    """Read all .memory/ files to check current project progress.
 
-```src/services/auth_service.py
-def login():
-    pass
-```
+    CALL THIS FIRST before writing any code.
 
-```frontend/package.json
-{{
-  "name": "my-app"
-}}
-```
+    Args:
+        memory_dir (str): Absolute path to the .memory/ folder
 
-The label MUST be the real file path — NOT a description, NOT "relative/path/to/file".
+    Returns:
+        str: Contents of all memory files.
+    """
+    if not os.path.exists(memory_dir):
+        return "No memory directory found. This is a fresh project."
+
+    output = []
+    for filename in sorted(os.listdir(memory_dir)):
+        if not filename.endswith(".md"):
+            continue
+        file_path = os.path.join(memory_dir, filename)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            output.append(f"### {filename}\n{content}")
+        except Exception as e:
+            output.append(f"### {filename}\nError reading: {e}")
+
+    return "\n\n".join(output) if output else "Memory folder exists but is empty."
+
+
+@tool
+def write_file(file_path: str, content: str | dict | list) -> str:
+    """Write or update a single file in the project code directory.
+
+    For NEW files: pass the full file contents.
+    For EXISTING files: pass SEARCH/REPLACE blocks using <<<<, ====, >>>> markers.
+
+    Args:
+        file_path (str): Relative file path (e.g. 'src/index.ts', 'package.json').
+        content: Full file content OR SEARCH/REPLACE blocks for existing files.
+
+    Returns:
+        str: Confirmation message.
+    """
+    import json as _json
+
+    if not _code_dir:
+        return "Error: code directory not set. Cannot write file."
+
+    if isinstance(content, (dict, list)):
+        content = _json.dumps(content, indent=2)
+
+    # LLMs sometimes pass paths like "code/backend/..." because the tree showed "code/" as the root
+    if file_path.startswith("code/"):
+        file_path = file_path[5:]
+    elif file_path.startswith("code\\"):
+        file_path = file_path[5:]
+        
+    abs_path = os.path.join(_code_dir, file_path)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+
+    # Try SEARCH/REPLACE first if file exists
+    if os.path.exists(abs_path):
+        patched = apply_search_replace_blocks(abs_path, content)
+        if patched:
+            return f"✓ Patched: {file_path}"
+
+    # Full file write (new file or no SEARCH/REPLACE blocks found)
+    with open(abs_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    return f"✓ Written: {file_path}"
+
+
+CODER_SYSTEM_PROMPT = """You are a senior software developer implementing a project milestone.
+
+## MANDATORY WORKFLOW
+1. Call `read_memory` with the .memory/ directory path to check project state.
+2. Call `show_tree` on the code directory to see existing files.
+3. If modifying an existing file, call `read_file` first.
+4. Use `write_file` to create/update each file ONE BY ONE.
+
+## WRITE_FILE USAGE
+- For NEW files: pass full contents to `write_file(file_path, content)`
+- For EXISTING files: pass SEARCH/REPLACE blocks:
+  <<<<
+  old code exactly as it appears
+  ====
+  new replacement code
+  >>>>
 
 ## RULES
-- Labels are real file paths only (e.g. `src/index.js`, `app/models/user.py`, `config.yaml`).
-- Use ONLY the tech stack provided.
-- Write complete, working, production-ready files.
-- Include all necessary imports, configs, and entry points.
-- If you are creating a NEW file, output the full file contents.
-- If you are modifying an EXISTING file (listed in CURRENT CODEBASE), you MUST use SEARCH/REPLACE blocks.
-- The SEARCH section must EXACTLY match the existing code in the file, including all whitespace.
-- If you do not need to modify an existing file, DO NOT output it.
-- NO prose, NO explanations — ONLY fenced code blocks.
-
-Begin.
+- Always use scalable folder architecture and structure.
+- Use ONLY the approved tech stack.
+- Write complete, production-ready code.
+- Create each file individually using `write_file` — do NOT dump all code at once.
+- After writing all files, respond with a brief summary of what you created.
 """
 
-CODER_REVISION_PROMPT = """You are a senior software developer. Your previously written code needs changes based on reviewer feedback.
+CODER_REVISION_PROMPT = """You are a senior software developer fixing code based on reviewer feedback.
 
-## OUTPUT FORMAT (STRICT)
+## MANDATORY WORKFLOW
+1. Call `read_memory` to check project state.
+2. Call `read_file` on each file you need to fix.
+3. Use `write_file` to update each file ONE BY ONE.
 
-Output ONLY the corrected code files as fenced code blocks.
-The fenced code block MUST use the EXACT relative file path as the language label.
-
-Example of a correct code block:
-
-```src/services/auth_service.py
-# corrected code
-```
+## WRITE_FILE USAGE
+- For EXISTING files use SEARCH/REPLACE blocks in `write_file`:
+  <<<<
+  old code
+  ====
+  new code
+  >>>>
+- For NEW files pass full contents.
 
 ## RULES
-- Labels are real file paths (e.g. `src/index.js`, `app/models.py`).
 - Address ALL reviewer feedback.
-- If you are creating a NEW file, output the full file contents.
-- If you are modifying an EXISTING file, you MUST use SEARCH/REPLACE blocks.
-- The SEARCH section must EXACTLY match the existing code in the file, including all whitespace.
-- NO prose, NO explanations — ONLY fenced code blocks.
-
-Begin.
+- Create/update each file individually using `write_file`.
+- After writing all files, respond with a brief summary of what you fixed.
 """
 
-proposal_prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", CODER_SYSTEM_PROMPT),
-        ("human", "{input}"),
-    ]
-)
-
-revision_prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", CODER_REVISION_PROMPT),
-        ("human", "{input}"),
-    ]
-)
+CODER_TOOLS = [read_memory, show_tree, read_file, read_directory, write_file]
 
 
 def get_coder_agent(model_name: str, revision: bool = False):
     """
-    Factory: creates a coder chain for the given Ollama model.
+    Factory: creates a tool-calling coder agent.
 
-    Returns a simple prompt | llm chain. The caller (manager.py) is responsible
-    for pre-populating the input with file tree, existing codebase, and memory
-    context before invoking the chain.
-
-    Args:
-        model_name: Ollama model name to use.
-        revision:   If True, uses the revision prompt focused on fixing feedback.
-
-    Returns:
-        A chain ready for .invoke({"input": "..."})
+    Tools:
+      - read_memory  : reads .memory/ for project progress (MUST call first)
+      - show_tree    : inspect directory file structure
+      - read_file    : read a single file before editing
+      - read_directory : read all files in a directory
+      - write_file   : write/update a single file in the code directory
     """
+    from langchain.agents import create_agent
+
     llm = ChatOllama(
         model=model_name,
         base_url=settings.OLLAMA_URL,
-        temperature=settings.OLLAMA_TEMPERATURE,
         num_predict=8192,
     )
-    prompt = revision_prompt if revision else proposal_prompt
-    return prompt | llm
+
+    system_prompt = CODER_REVISION_PROMPT if revision else CODER_SYSTEM_PROMPT
+
+    agent = create_agent(
+        model=llm,
+        tools=CODER_TOOLS,
+        system_prompt=system_prompt,
+    )
+
+    return agent
