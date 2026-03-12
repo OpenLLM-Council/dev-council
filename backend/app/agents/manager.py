@@ -674,31 +674,17 @@ def code_milestone(state: ManagerState):
         agent = get_coder_agent(chosen_model, revision=False)
 
     console.print("[bold green]Writing code...[/bold green]")
-    written_files = []
-    response = None
-    for chunk in agent.stream({"messages": [HumanMessage(content=input_text)]}):
-        for node_name, node_output in chunk.items():
-            messages = node_output.get("messages", [])
-            for msg in messages:
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        tool_name = tc['name']
-                        args = tc['args']
-                        if tool_name == "write_file":
-                            console.print(f"[bold green]  📝 Writing: {args.get('file_path', '')}[/bold green]")
-                        else:
-                            console.print(f"[dim]  🔧 {tool_name}({args})[/dim]")
-                elif hasattr(msg, "type") and msg.type == "tool":
-                    if msg.name == "write_file":
-                        console.print(f"[dim]    {msg.content}[/dim]")
-                        written_files.append(msg.content)
-                    else:
-                        preview = (msg.content[:120] + "...") if len(msg.content) > 120 else msg.content
-                        console.print(f"[dim]  ← {msg.name}: {preview}[/dim]")
-        response = chunk
-
-    generated_code = extract_text(response)
-    console.print(f"[bold green]  ✓ Code generation complete — {len(written_files)} file(s) written[/bold green]")
+    
+    # AgentExecutor handles tool calling internally and returns the final output
+    result = agent.invoke({"input": input_text})
+    
+    # Extract the generated code from the result
+    generated_code = result.get("output", "") if isinstance(result, dict) else str(result)
+    
+    # Count files by checking for write_file calls in the agent trace
+    # Since AgentExecutor handles this internally, we count based on console output
+    # The actual files are written by the write_file tool during execution
+    console.print(f"[bold green]  ✓ Code generation complete[/bold green]")
 
     attempt = state.get("code_attempt", 0) + 1
     return {

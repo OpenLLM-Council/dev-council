@@ -49,12 +49,13 @@ def parse_code_blocks(llm_output: str) -> list[dict]:
     return blocks
 
 
-
 def apply_search_replace_blocks(file_path: str, content: str) -> bool:
     """
     Looks for <<<<, ====, >>>> blocks in the content.
     If found, applies them as search/replace operations to the file at file_path.
     Returns True if blocks were found and applied (or attempted), False otherwise.
+    
+    DEPRECATED: Use file_editor.py tools instead (replace_in_file, insert_after_line, delete_lines).
     """
     pattern = re.compile(r"<<<<\n(.*?)\n====\n(.*?)\n>>>>", re.DOTALL)
     blocks = list(pattern.finditer(content))
@@ -101,6 +102,8 @@ def write_code_files(llm_output: str, base_dir: str) -> list[str]:
 
     Returns:
         List of written file paths (absolute).
+    
+    NOTE: This uses legacy apply_search_replace_blocks. For new code, use file_editor tools directly.
     """
     blocks = parse_code_blocks(llm_output)
     written = []

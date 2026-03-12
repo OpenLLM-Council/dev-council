@@ -1,9 +1,260 @@
 import os
+import re
+import json
+import difflib
+from typing import List, Any
 from langchain.tools import tool
 
 
 _file_cache: dict = {}
 MAX_FILE_CHARS = 3000
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _read_lines(filepath: str) -> list[str]:
+    """Read file as list of lines."""
+    with open(filepath, "r", encoding="utf-8") as f:
+        return f.readlines()
+
+
+def _normalize_path(path: str) -> str:
+    """Convert relative paths to absolute using _code_dir if needed."""
+    if os.path.isabs(path):
+        return path
+    # Try importing _code_dir from coder_agent
+    try:
+        from app.agents.coder_agent import _code_dir
+        if _code_dir and not os.path.isabs(path):
+            return os.path.abspath(os.path.join(_code_dir, path))
+    except:
+        pass
+    return os.path.abspath(path)
+
+
+def _assert_is_file(path: str) -> "str | None":
+    """Returns an error string if path is not a regular file, else None."""
+    path = _normalize_path(path)
+    if not os.path.exists(path):
+        return f"Error: '{path}' does not exist."
+    if os.path.isdir(path):
+        return (
+            f"Error: '{path}' is a directory, not a file. "
+            "Use get_project_tree to list files, then pass a specific file path."
+        )
+    return None
+
+
+def _nearby_hint(content: str, old_text: str) -> str:
+    """Finds the closest matching block and returns a hint."""
+    old_lines = old_text.splitlines()
+    content_lines = content.splitlines()
+    best_ratio, best_start = 0.0, 0
+    window = max(len(old_lines), 1)
+
+    for i in range(max(1, len(content_lines) - window + 1)):
+        block = content_lines[i : i + window]
+        ratio = difflib.SequenceMatcher(None, old_lines, block).ratio()
+        if ratio > best_ratio:
+            best_ratio, best_start = ratio, i
+
+    if best_ratio < 0.3:
+        return ""
+
+    snippet = "\n".join(
+        f"  L{best_start + j + 1}: {line}"
+        for j, line in enumerate(content_lines[best_start : best_start + window])
+    )
+    return (
+        f"\nClosest match at line ~{best_start + 1} (similarity {best_ratio:.0%}):\n"
+        f"{snippet}\n"
+        "-> Check indentation/whitespace, or use get_lines on those lines.\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# EXPLORE tools
+# ---------------------------------------------------------------------------
+
+@tool
+def get_project_tree(project_path: str) -> str:
+    """
+    Returns a directory tree of the project.
+    Skips .git, .memory, .venv, __pycache__, node_modules.
+    Always call this first to understand the workspace.
+    """
+    project_path = _normalize_path(project_path)
+    if not os.path.exists(project_path):
+        return f"Error: Path '{project_path}' does not exist."
+
+    ignored = {".git", ".memory", ".venv", "__pycache__", "node_modules", ".mypy_cache"}
+    lines = [f"Project: {os.path.abspath(project_path)}"]
+
+    for root, dirs, files in os.walk(project_path):
+        dirs[:] = sorted(d for d in dirs if d not in ignored and not d.startswith("."))
+        level = root.replace(project_path, "").count(os.sep)
+        lines.append(f"{'    ' * level}{os.path.basename(root)}/")
+        for f in sorted(files):
+            lines.append(f"{'    ' * (level + 1)}{f}")
+
+    return "\n".join(lines)
+
+
+@tool
+def search_in_file(
+    filepath: str,
+    pattern: str,
+    is_regex: bool = False,
+    context_lines: int = 2,
+) -> str:
+    """
+    Searches for a string (or regex) inside a FILE and returns matching line numbers
+    plus surrounding context. filepath MUST be a file path, not a directory.
+
+    Use context_lines=3 when searching for a function definition to see its full signature.
+    Use context_lines=0 when just collecting call-site line numbers for delete_lines.
+
+    Returns up to 20 matches. Use a more specific pattern if you get too many.
+    """
+    filepath = _normalize_path(filepath)
+    err = _assert_is_file(filepath)
+    if err:
+        return err
+
+    try:
+        lines = _read_lines(filepath)
+        total = len(lines)
+        hit_indices: list[int] = []
+
+        for i, line in enumerate(lines):
+            matched = bool(re.search(pattern, line)) if is_regex else pattern in line
+            if matched:
+                hit_indices.append(i)
+                if len(hit_indices) >= 20:
+                    break
+
+        if not hit_indices:
+            return f"No matches for '{pattern}' in '{filepath}'."
+
+        parts = [
+            f"Found {len(hit_indices)} match(es) for '{pattern}' in '{filepath}' "
+            f"(total {total} lines):\n"
+        ]
+        for idx in hit_indices:
+            lo = max(0, idx - context_lines)
+            hi = min(total - 1, idx + context_lines)
+            block = []
+            for j in range(lo, hi + 1):
+                marker = ">>>" if j == idx else "   "
+                block.append(f"  {marker} L{j+1}: {lines[j].rstrip()}")
+            parts.append("\n".join(block))
+
+        if len(hit_indices) == 20:
+            parts.append("  ... (capped at 20 -- refine pattern if needed)")
+
+        return "\n\n".join(parts)
+    except re.error as e:
+        return f"Invalid regex: {e}"
+    except Exception as e:
+        return f"Error searching file: {e}"
+
+
+@tool
+def get_file_length(filepath: str) -> str:
+    """
+    Returns the total number of lines in a file.
+    Use before read_file_chunk on large files to plan chunk ranges.
+    Not needed before read_whole_file or delete_lines.
+    """
+    filepath = _normalize_path(filepath)
+    err = _assert_is_file(filepath)
+    if err:
+        return err
+    try:
+        return f"'{filepath}' has {len(_read_lines(filepath))} lines."
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@tool
+def read_whole_file(filepath: str) -> str:
+    """
+    Reads the entire file with line numbers prefixed.
+    Use when you need full context before adding or refactoring code (files <= 300 lines).
+    Refuses files over 300 lines -- use read_file_chunk for those.
+    """
+    filepath = _normalize_path(filepath)
+    err = _assert_is_file(filepath)
+    if err:
+        return err
+    try:
+        lines = _read_lines(filepath)
+        total = len(lines)
+        if total > 300:
+            return (
+                f"'{filepath}' has {total} lines -- too large for read_whole_file. "
+                "Use get_file_length then read_file_chunk in overlapping 60-line windows."
+            )
+        numbered = "".join(f"L{i+1:>4}: {line}" for i, line in enumerate(lines))
+        return f"--- '{filepath}' ({total} lines) ---\n{numbered}--- end ---"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@tool
+def read_file_chunk(filepath: str, start_line: int, end_line: int) -> str:
+    """
+    Reads a specific line range from a file (1-indexed, inclusive).
+    Use for files over 300 lines where read_whole_file is refused.
+    Use overlapping ranges (e.g. 1-70, 60-130) to avoid cutting functions in half.
+    """
+    filepath = _normalize_path(filepath)
+    err = _assert_is_file(filepath)
+    if err:
+        return err
+    try:
+        lines = _read_lines(filepath)
+        total = len(lines)
+        start = max(1, start_line)
+        end = min(total, end_line)
+        if start > end:
+            return f"Error: start_line ({start}) > end_line ({end})."
+        chunk = "".join(lines[start - 1 : end])
+        return f"--- '{filepath}' lines {start}-{end} of {total} ---\n{chunk}--- end of chunk ---"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@tool
+def get_lines(filepath: str, line_numbers: List[int]) -> str:
+    """
+    Returns the exact content of specific line numbers (max 50).
+    Use this instead of read_file_chunk when you only need a few exact lines
+    to copy verbatim into old_text for replace_in_file.
+    """
+    filepath = _normalize_path(filepath)
+    err = _assert_is_file(filepath)
+    if err:
+        return err
+    try:
+        lines = _read_lines(filepath)
+        total = len(lines)
+        result = []
+        for n in sorted(set(line_numbers))[:50]:
+            if 1 <= n <= total:
+                result.append(f"L{n}: {lines[n-1].rstrip()}")
+            else:
+                result.append(f"L{n}: (out of range -- file has {total} lines)")
+        return "\n".join(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Legacy tools (kept for backward compatibility)
+# ---------------------------------------------------------------------------
 
 @tool
 def read_file(file_path: str) -> str:
