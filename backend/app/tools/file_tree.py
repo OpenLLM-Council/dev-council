@@ -1,6 +1,8 @@
 import os
 from langchain.tools import tool
 
+from app.tools.path_utils import ensure_within_workspace, get_code_dir
+
 
 @tool
 def show_tree(start_path: str = ".") -> str:
@@ -12,14 +14,13 @@ def show_tree(start_path: str = ".") -> str:
     Returns:
         str: The file tree of the given path as a formatted string.
     """
-    from app.agents.coder_agent import _code_dir
-
-    if not _code_dir:
+    code_dir = get_code_dir()
+    if not code_dir:
         return "Error: code directory not set."
 
-    abs_path = os.path.abspath(os.path.join(_code_dir, start_path))
-    if not abs_path.startswith(os.path.abspath(_code_dir)):
-        return f"Error: Cannot access directory {start_path}. Stick to the code/ directory."
+    abs_path, path_error = ensure_within_workspace(start_path, base_dir=code_dir)
+    if path_error:
+        return path_error
 
     if not os.path.exists(abs_path):
         return f"Path does not exist: {start_path} (checked in codebase: {abs_path})"

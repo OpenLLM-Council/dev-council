@@ -7,12 +7,21 @@ import json
 from typing import Any
 from langchain.tools import tool
 
+from app.tools.path_utils import ensure_within_workspace, get_code_dir
+
 
 def _get_memory_dir(project_path: str) -> str:
     """Ensure .memory directory exists and return path."""
     memory_dir = os.path.join(project_path, ".memory")
     os.makedirs(memory_dir, exist_ok=True)
     return memory_dir
+
+
+def _resolve_project_path(project_path: str) -> tuple[str, str | None]:
+    """Resolve project_path relative to the active code directory when available."""
+    code_dir = get_code_dir()
+    base_dir = os.path.dirname(code_dir) if code_dir else None
+    return ensure_within_workspace(project_path, base_dir=base_dir)
 
 
 @tool
@@ -34,6 +43,10 @@ def update_memory(project_path: str, topic: str, data: Any) -> str:
         update_memory(project_path, "architecture", {"layers": ["backend", "frontend"]})
     """
     try:
+        project_path, path_error = _resolve_project_path(project_path)
+        if path_error:
+            return path_error
+
         if isinstance(data, (dict, list)):
             data = json.dumps(data, indent=4)
         else:
@@ -79,6 +92,10 @@ def get_memory(project_path: str, topic: str) -> str:
         get_memory(project_path, "architecture")
     """
     try:
+        project_path, path_error = _resolve_project_path(project_path)
+        if path_error:
+            return path_error
+
         mem_file = os.path.join(_get_memory_dir(project_path), "memory.json")
         
         if not os.path.exists(mem_file):
@@ -106,6 +123,9 @@ def read_all_memory(project_path: str) -> dict:
         Dictionary of all topics -> values, or empty dict if no memory exists.
     """
     try:
+        project_path, path_error = _resolve_project_path(project_path)
+        if path_error:
+            return {}
         mem_file = os.path.join(_get_memory_dir(project_path), "memory.json")
         if not os.path.exists(mem_file):
             return {}

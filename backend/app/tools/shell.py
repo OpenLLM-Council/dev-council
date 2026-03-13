@@ -3,7 +3,10 @@ import subprocess
 import platform
 import signal
 import os
+import re
 from langchain.tools import tool
+
+from app.tools.path_utils import ensure_within_workspace, get_code_dir
 
 
 # ---------------------------------------------------------------------------
@@ -11,6 +14,99 @@ from langchain.tools import tool
 # ---------------------------------------------------------------------------
 
 _processes: dict[str, subprocess.Popen] = {}
+_CODE_WRITE_EXTENSIONS = {
+    ".env", ".css", ".csv", ".html", ".ini", ".js", ".json", ".jsx",
+    ".md", ".mjs", ".py", ".sql", ".svg", ".toml", ".ts", ".tsx",
+    ".txt", ".xml", ".yaml", ".yml",
+}
+
+
+def _resolve_work_dir(cwd: str) -> tuple[str, str | None]:
+    """Resolve cwd relative to the active code directory when available."""
+    code_dir = get_code_dir()
+    target = cwd.strip() if cwd.strip() else (code_dir or os.getcwd())
+    return ensure_within_workspace(target, base_dir=code_dir or None)
+
+
+def _validate_shell_command(command: str) -> str | None:
+    """Reject shell commands that are likely to cause tool loops or shell portability issues."""
+    normalized = command.lower()
+
+    if os.name == "nt":
+        issues = []
+        if "mkdir -p" in normalized:
+            issues.append("`mkdir -p` is bash syntax and creates the wrong folders on Windows cmd.")
+        if re.search(r"\bpwd\b", normalized):
+            issues.append("`pwd` is not available in Windows cmd; use the working directory already passed via `cwd` or use `cd`.")
+        if re.search(r"mkdir\s+[^\n]*\{[^\n]*,[^\n]*\}", normalized):
+            issues.append("brace expansion like `src/{a,b}` is not supported in Windows cmd.")
+        if issues:
+            joined = " ".join(issues)
+            return (
+                f"ERROR: Unsupported Windows shell syntax detected. {joined} "
+                "run_shell executes commands through Windows cmd.exe; use Windows-safe commands."
+            )
+
+    write_ops = (">", ">>", "add-content", "set-content", "out-file", "type nul")
+    if any(op in normalized for op in write_ops):
+        matches = re.findall(r"([^\s\"']+\.[A-Za-z0-9]+)", command)
+        if any(os.path.splitext(path)[1].lower() in _CODE_WRITE_EXTENSIONS for path in matches):
+            return (
+                "ERROR: Do not use run_shell to create or edit project files. "
+                "Use write_file for new files, insert_after_line for additions, "
+                "and replace_in_file/delete_lines for edits."
+            )
+
+    return None
+
+
+def _run_command(command: str, work_dir: str, env: dict, timeout: int) -> subprocess.CompletedProcess:
+    """Execute a shell command using a deterministic shell for the current platform."""
+    if os.name == "nt":
+        return subprocess.run(
+            ["cmd.exe", "/d", "/s", "/c", command],
+            cwd=work_dir,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+
+    return subprocess.run(
+        command,
+        shell=True,
+        cwd=work_dir,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        stdin=subprocess.DEVNULL,
+        env=env,
+    )
+
+
+def _start_command(command: str, work_dir: str, env: dict) -> subprocess.Popen:
+    """Start a background command using a deterministic shell for the current platform."""
+    kwargs = dict(
+        cwd=work_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+
+    if os.name == "nt":
+        return subprocess.Popen(
+            ["cmd.exe", "/d", "/s", "/c", command],
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            **kwargs,
+        )
+
+    return subprocess.Popen(command, shell=True, **kwargs)
 
 
 @tool
@@ -27,11 +123,13 @@ def run_shell(command: str, cwd: str = "") -> str:
     Returns:
         Combined stdout + stderr output of the command, or an error message.
     """
-    from app.agents.coder_agent import _code_dir
+    work_dir, path_error = _resolve_work_dir(cwd)
+    if path_error:
+        return path_error
 
-    work_dir = cwd.strip() if cwd.strip() else _code_dir
-    if not work_dir:
-        work_dir = os.getcwd()
+    validation_error = _validate_shell_command(command)
+    if validation_error:
+        return validation_error
 
     # Ensure the directory exists
     os.makedirs(work_dir, exist_ok=True)
@@ -41,17 +139,7 @@ def run_shell(command: str, cwd: str = "") -> str:
     env = {**os.environ, "CI": "true"}
 
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=work_dir,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
-            stdin=subprocess.DEVNULL,
-            env=env,
-        )
+        result = _run_command(command, work_dir, env, timeout=120)
         output = ""
         if result.stdout:
             output += result.stdout
@@ -82,11 +170,13 @@ def start_background_process(command: str, process_name: str, cwd: str = "") -> 
     Returns:
         A confirmation string with the process name and PID.
     """
-    from app.agents.coder_agent import _code_dir
+    work_dir, path_error = _resolve_work_dir(cwd)
+    if path_error:
+        return path_error
 
-    work_dir = cwd.strip() if cwd.strip() else _code_dir
-    if not work_dir:
-        work_dir = os.getcwd()
+    validation_error = _validate_shell_command(command)
+    if validation_error:
+        return validation_error
     os.makedirs(work_dir, exist_ok=True)
 
     # Stop an existing process with the same name first
@@ -103,21 +193,7 @@ def start_background_process(command: str, process_name: str, cwd: str = "") -> 
     env = {**os.environ, "CI": "true"}
 
     try:
-        kwargs = dict(
-            shell=True,
-            cwd=work_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-        )
-        # On Windows, create a new process group so we can terminate cleanly
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-
-        proc = subprocess.Popen(command, **kwargs)
+        proc = _start_command(command, work_dir, env)
         _processes[process_name] = proc
         return f"Started '{process_name}' (PID {proc.pid}): {command}"
     except Exception as e:
@@ -186,11 +262,11 @@ def get_platform_info() -> str:
     version = platform.version()
     arch = platform.machine()
     if system == "Windows":
-        shell = "PowerShell / cmd.exe"
+        shell = "run_shell uses Windows cmd.exe"
     elif system == "Darwin":
-        shell = "zsh (default on macOS)"
+        shell = "run_shell uses /bin/sh"
     else:
-        shell = "bash"
+        shell = "run_shell uses /bin/sh"
     return (
         f"OS: {system}\n"
         f"Release: {release}\n"
