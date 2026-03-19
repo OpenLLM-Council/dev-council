@@ -31,6 +31,7 @@ from app.core.config import settings
 # Import all production tools
 from app.tools.file_reader import (
     get_project_tree,
+    search_in_project,
     search_in_file,
     get_file_length,
     read_whole_file,
@@ -74,6 +75,7 @@ def set_directories(code_path: str, memory_path: str):
 
 CODER_TOOLS = [
     get_project_tree,
+    search_in_project,
     search_in_file,
     get_file_length,
     read_whole_file,
@@ -101,6 +103,7 @@ _WRITE_TOOLS = {
 
 _READ_TOOLS = {
     "get_project_tree", "search_in_file", "get_file_length",
+    "search_in_project",
     "read_whole_file", "read_file_chunk", "get_lines",
     "read_file", "read_directory",
 }
@@ -147,6 +150,10 @@ class _ReadCache:
         for k in to_remove:
             self._seen.pop(k, None)
 
+    def invalidate_all(self):
+        """Clear all cached reads after commands that may mutate multiple files."""
+        self._seen.clear()
+
     def reset(self):
         self._seen.clear()
 
@@ -161,6 +168,7 @@ _read_cache = _ReadCache()
 MAX_HISTORY_MESSAGES = 40
 TOOL_RESULT_TRUNCATE_CHARS = 500
 TOOL_RESULT_RECENT_WINDOW = 10
+MAX_AGENT_STEPS = 80
 
 
 def _trim_history(messages: list) -> list:
@@ -256,7 +264,9 @@ class GuardedToolNode(ToolNode):
                 filepath = call["args"].get("filepath", call["args"].get("file_path", ""))
                 if filepath:
                     _read_cache.invalidate_for_path(filepath)
-            elif call["name"] in ("run_shell", "start_background_process"):
+            elif call["name"] == "run_shell":
+                _read_cache.invalidate_all()
+            elif call["name"] == "start_background_process":
                 _read_cache.invalidate_tree()
 
             preview = content_str[:100].replace("\n", " ")
@@ -295,8 +305,10 @@ CRITICAL — USE SHELL COMMANDS FOR SETUP
 
 FIRST call `get_platform_info` to detect the OS and shell. Then use the correct
 syntax for that platform when running shell commands with `run_shell`.
+On Windows, `run_shell` executes through `cmd.exe`, not bash.
 
 Before writing ANY code, use `run_shell` to scaffold projects and install dependencies.
+Use `run_shell` only for setup, dependency installation, builds, tests, and scaffolding.
 
 IMPORTANT: ALWAYS use non-interactive flags so commands never wait for input!
 Examples of correct non-interactive commands:
@@ -309,6 +321,10 @@ Examples of correct non-interactive commands:
 - Any CLI:    ALWAYS pass --yes, --default, --no-input, -y, or equivalent flags
 
 NEVER run a scaffolding command without its non-interactive flags — it will hang forever.
+NEVER use bash-only syntax on Windows such as `mkdir -p`, `pwd`, or brace expansion like `src/{a,b}`.
+NEVER use `echo`, `>`, `>>`, `Add-Content`, `Set-Content`, `Out-File`, or `type nul`
+to create/edit project files. Use `write_file`, `insert_after_line`, `replace_in_file`,
+and `delete_lines` for all file content changes.
 
 Do NOT manually create package.json, vite.config.ts, tsconfig.json, etc. — let the CLI generate them.
 After scaffolding, use get_project_tree to see what was created, then write/edit only your custom code.
@@ -323,9 +339,10 @@ PARADIGM 1 — MODIFY / DELETE existing code
 ══════════════════════════════════════════════════════
 
 1. get_project_tree — see the directory layout
-2. search_in_file(pattern, context_lines=3) — find the code to change
-3. search_in_file(pattern, context_lines=0) — find all call sites if needed
-4. EDIT:
+2. search_in_project(project_path, pattern) — find the right file when you do not know it yet
+3. search_in_file(pattern, context_lines=3) — inspect the code to change
+4. search_in_file(pattern, context_lines=0) — find all call sites if needed
+5. EDIT:
    - Removing?  → delete_lines (pass ALL ranges in ONE call)
    - Renaming?  → multi_replace_in_file with all occurrences
    - Logic fix? → get_lines on the exact lines, then replace_in_file
@@ -337,14 +354,15 @@ PARADIGM 2 — ADD new code (new file or new feature)
 
 1. run_shell — scaffold the project / install dependencies FIRST
 2. get_project_tree — see what the scaffolding created
-3. read_whole_file — read context (for files ≤ 300 lines)
+3. search_in_project(project_path, pattern) — find likely target files when needed
+4. read_whole_file — read context (for files ≤ 300 lines)
    For files > 300 lines: get_file_length, then read_file_chunk in 70-line windows
-4. Write the code:
+5. Write the code:
    - New file → write_file(filepath, content)
    - Add to existing → insert_after_line(filepath, after_line, new_code)
-5. Install any extra deps: run_shell("npm install axios react-router-dom", cwd="...")
-6. Wire it up — add imports/calls using replace_in_file or insert_after_line
-7. DONE — write a brief summary
+6. Install any extra deps: run_shell("npm install axios react-router-dom", cwd="...")
+7. Wire it up — add imports/calls using replace_in_file or insert_after_line
+8. DONE — write a brief summary
 
 ══════════════════════════════════════════════════════
 RULES
@@ -369,7 +387,7 @@ You have access to tools for reading, writing, editing files, AND running shell 
 1. get_project_tree — see the current structure
 2. If missing dependencies are flagged, use run_shell to install them first
 3. For EACH issue in the feedback:
-   a. search_in_file to find the problematic code
+   a. search_in_project if you need to locate the file first, then search_in_file
    b. get_lines to get exact text for replacement
    c. Use replace_in_file, delete_lines, or insert_after_line to fix it
 4. Save progress with update_memory
@@ -377,6 +395,9 @@ You have access to tools for reading, writing, editing files, AND running shell 
 
 ## RULES
 
+- run_shell is only for setup/build/test commands, never for writing project files
+- On Windows, run_shell executes through cmd.exe, so avoid bash-only syntax like mkdir -p, pwd, and brace expansion
+- Never use echo/redirection/Add-Content/Set-Content/type nul to write code or config files
 - Use forward slashes in file paths (e.g. C:/Users/user/project/src/app.py)
 - filepath must point to a FILE, never a directory
 - Address ALL reviewer feedback — do not skip anything
@@ -425,6 +446,21 @@ def get_coder_agent(model_name: str, revision: bool = False):
     def coder_node(state: _CoderState):
         _step["n"] += 1
         step = _step["n"]
+        if step > MAX_AGENT_STEPS:
+            console.print(
+                f"[bold yellow]  Step limit reached ({MAX_AGENT_STEPS}); stopping likely tool loop[/bold yellow]"
+            )
+            return {
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "I stopped because I exceeded the safe tool-call limit, which usually "
+                            "means I got stuck in a shell or file-edit loop. Please review the recent "
+                            "tool outputs and continue with a smaller corrective prompt."
+                        )
+                    )
+                ]
+            }
         messages = state.get("messages", [])
         trimmed = _trim_history(messages)
         n_msgs = len(trimmed)

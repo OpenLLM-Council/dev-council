@@ -9,11 +9,12 @@ Core philosophy:
 - Provide helpful error messages with candidate suggestions
 """
 import os
-import re
 import json
 import difflib
 from typing import List, Any
 from langchain.tools import tool
+
+from app.tools.path_utils import ensure_within_workspace
 
 
 # ---------------------------------------------------------------------------
@@ -26,23 +27,16 @@ def _read_lines(filepath: str) -> list[str]:
         return f.readlines()
 
 
-def _normalize_path(path: str) -> str:
-    """Convert relative paths to absolute using _code_dir if needed."""
-    if os.path.isabs(path):
-        return path
-    # Try importing _code_dir from coder_agent
-    try:
-        from app.agents.coder_agent import _code_dir
-        if _code_dir and not os.path.isabs(path):
-            return os.path.abspath(os.path.join(_code_dir, path))
-    except:
-        pass
-    return os.path.abspath(path)
+def _normalize_path(path: str) -> tuple[str, str | None]:
+    """Convert relative paths to absolute and keep them inside the active workspace."""
+    return ensure_within_workspace(path)
 
 
 def _assert_is_file(path: str) -> "str | None":
     """Returns an error string if path is not a regular file, else None."""
-    path = _normalize_path(path)
+    path, path_error = _normalize_path(path)
+    if path_error:
+        return path_error
     if not os.path.exists(path):
         return f"Error: '{path}' does not exist."
     if os.path.isdir(path):
@@ -101,7 +95,9 @@ def delete_lines(filepath: str, line_ranges: List[dict]) -> str:
 
     Example: delete_lines(filepath, [{"start":4,"end":6},{"start":10,"end":10},{"start":20,"end":20}])
     """
-    filepath = _normalize_path(filepath)
+    filepath, path_error = _normalize_path(filepath)
+    if path_error:
+        return path_error
     err = _assert_is_file(filepath)
     if err:
         return err
@@ -165,7 +161,9 @@ def insert_after_line(filepath: str, after_line: int, new_code: str) -> str:
         after_line: Insert after this 1-indexed line. Use 0 to insert at top of file.
         new_code:   The full code string to insert (include a leading blank line for spacing).
     """
-    filepath = _normalize_path(filepath)
+    filepath, path_error = _normalize_path(filepath)
+    if path_error:
+        return path_error
     err = _assert_is_file(filepath)
     if err:
         return err
@@ -207,7 +205,9 @@ def replace_in_file(filepath: str, old_text: str, new_text: Any) -> str:
     Prefer delete_lines for removing code.
     Use this for in-place modifications: renaming, changing logic, updating a value.
     """
-    filepath = _normalize_path(filepath)
+    filepath, path_error = _normalize_path(filepath)
+    if path_error:
+        return path_error
     err = _assert_is_file(filepath)
     if err:
         return err
@@ -255,7 +255,9 @@ def multi_replace_in_file(filepath: str, replacements: List[dict]) -> str:
         filepath:     Absolute or relative path to the file (relative to code_dir).
         replacements: List of {"old_text": "...", "new_text": "..."} dicts.
     """
-    filepath = _normalize_path(filepath)
+    filepath, path_error = _normalize_path(filepath)
+    if path_error:
+        return path_error
     err = _assert_is_file(filepath)
     if err:
         return err
@@ -307,7 +309,9 @@ def write_file(filepath: str, content: Any) -> str:
             content = json.dumps(content, indent=4)
         content = str(content)
 
-        abs_path = _normalize_path(filepath)
+        abs_path, path_error = _normalize_path(filepath)
+        if path_error:
+            return path_error
         if os.path.exists(abs_path):
             return (
                 f"Error: '{filepath}' already exists. "

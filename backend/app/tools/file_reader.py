@@ -1,13 +1,19 @@
 import os
 import re
-import json
 import difflib
-from typing import List, Any
+from typing import List
 from langchain.tools import tool
+
+from app.tools.path_utils import ensure_within_workspace, get_code_dir
 
 
 _file_cache: dict = {}
 MAX_FILE_CHARS = 3000
+_SEARCH_SKIP_DIRS = {".git", ".memory", ".venv", "__pycache__", "node_modules", ".mypy_cache"}
+_SEARCH_SKIP_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".exe", ".pyc", ".ico",
+    ".svg", ".lock", ".zip", ".tar", ".gz", ".woff", ".woff2",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -20,23 +26,16 @@ def _read_lines(filepath: str) -> list[str]:
         return f.readlines()
 
 
-def _normalize_path(path: str) -> str:
-    """Convert relative paths to absolute using _code_dir if needed."""
-    if os.path.isabs(path):
-        return path
-    # Try importing _code_dir from coder_agent
-    try:
-        from app.agents.coder_agent import _code_dir
-        if _code_dir and not os.path.isabs(path):
-            return os.path.abspath(os.path.join(_code_dir, path))
-    except:
-        pass
-    return os.path.abspath(path)
+def _normalize_path(path: str) -> tuple[str, str | None]:
+    """Convert relative paths to absolute and keep them inside the active workspace."""
+    return ensure_within_workspace(path)
 
 
 def _assert_is_file(path: str) -> "str | None":
     """Returns an error string if path is not a regular file, else None."""
-    path = _normalize_path(path)
+    path, path_error = _normalize_path(path)
+    if path_error:
+        return path_error
     if not os.path.exists(path):
         return f"Error: '{path}' does not exist."
     if os.path.isdir(path):
@@ -85,21 +84,102 @@ def get_project_tree(project_path: str) -> str:
     Skips .git, .memory, .venv, __pycache__, node_modules.
     Always call this first to understand the workspace.
     """
-    project_path = _normalize_path(project_path)
+    project_path, path_error = _normalize_path(project_path)
+    if path_error:
+        return path_error
     if not os.path.exists(project_path):
         return f"Error: Path '{project_path}' does not exist."
 
-    ignored = {".git", ".memory", ".venv", "__pycache__", "node_modules", ".mypy_cache"}
     lines = [f"Project: {os.path.abspath(project_path)}"]
 
     for root, dirs, files in os.walk(project_path):
-        dirs[:] = sorted(d for d in dirs if d not in ignored and not d.startswith("."))
+        dirs[:] = sorted(d for d in dirs if d not in _SEARCH_SKIP_DIRS and not d.startswith("."))
         level = root.replace(project_path, "").count(os.sep)
         lines.append(f"{'    ' * level}{os.path.basename(root)}/")
         for f in sorted(files):
             lines.append(f"{'    ' * (level + 1)}{f}")
 
     return "\n".join(lines)
+
+
+@tool
+def search_in_project(
+    project_path: str,
+    pattern: str,
+    is_regex: bool = False,
+    context_lines: int = 1,
+    max_results: int = 50,
+) -> str:
+    """
+    Search across the project for a string or regex and return file/line matches.
+
+    Use this when you know the symbol or text to change but not the exact file yet.
+    """
+    project_path, path_error = _normalize_path(project_path)
+    if path_error:
+        return path_error
+    if not os.path.isdir(project_path):
+        return f"Error: '{project_path}' is not a directory."
+
+    try:
+        regex = re.compile(pattern) if is_regex else None
+    except re.error as e:
+        return f"Invalid regex: {e}"
+
+    matches: list[str] = []
+    file_hits = 0
+
+    for root, dirs, files in os.walk(project_path):
+        dirs[:] = sorted(d for d in dirs if d not in _SEARCH_SKIP_DIRS and not d.startswith("."))
+        for filename in sorted(files):
+            ext = os.path.splitext(filename)[1].lower()
+            if ext in _SEARCH_SKIP_EXTS:
+                continue
+
+            filepath = os.path.join(root, filename)
+            try:
+                lines = _read_lines(filepath)
+            except (UnicodeDecodeError, OSError):
+                continue
+
+            file_match_blocks = []
+            for i, line in enumerate(lines):
+                matched = bool(regex.search(line)) if regex else pattern in line
+                if not matched:
+                    continue
+
+                lo = max(0, i - context_lines)
+                hi = min(len(lines) - 1, i + context_lines)
+                block = [f"{os.path.relpath(filepath, project_path)}:"]
+                for j in range(lo, hi + 1):
+                    marker = ">>>" if j == i else "   "
+                    block.append(f"  {marker} L{j + 1}: {lines[j].rstrip()}")
+                file_match_blocks.append("\n".join(block))
+
+                if len(matches) + len(file_match_blocks) >= max_results:
+                    break
+
+            if file_match_blocks:
+                file_hits += 1
+                matches.extend(file_match_blocks)
+
+            if len(matches) >= max_results:
+                break
+        if len(matches) >= max_results:
+            break
+
+    if not matches:
+        return f"No matches for '{pattern}' in '{project_path}'."
+
+    suffix = ""
+    if len(matches) >= max_results:
+        suffix = f"\n\n... results capped at {max_results}; refine the pattern if needed."
+
+    return (
+        f"Found {len(matches)} match(es) across {file_hits} file(s) for '{pattern}' in '{project_path}'.\n\n"
+        + "\n\n".join(matches)
+        + suffix
+    )
 
 
 @tool
@@ -118,7 +198,9 @@ def search_in_file(
 
     Returns up to 20 matches. Use a more specific pattern if you get too many.
     """
-    filepath = _normalize_path(filepath)
+    filepath, path_error = _normalize_path(filepath)
+    if path_error:
+        return path_error
     err = _assert_is_file(filepath)
     if err:
         return err
@@ -168,7 +250,9 @@ def get_file_length(filepath: str) -> str:
     Use before read_file_chunk on large files to plan chunk ranges.
     Not needed before read_whole_file or delete_lines.
     """
-    filepath = _normalize_path(filepath)
+    filepath, path_error = _normalize_path(filepath)
+    if path_error:
+        return path_error
     err = _assert_is_file(filepath)
     if err:
         return err
@@ -185,7 +269,9 @@ def read_whole_file(filepath: str) -> str:
     Use when you need full context before adding or refactoring code (files <= 300 lines).
     Refuses files over 300 lines -- use read_file_chunk for those.
     """
-    filepath = _normalize_path(filepath)
+    filepath, path_error = _normalize_path(filepath)
+    if path_error:
+        return path_error
     err = _assert_is_file(filepath)
     if err:
         return err
@@ -210,7 +296,9 @@ def read_file_chunk(filepath: str, start_line: int, end_line: int) -> str:
     Use for files over 300 lines where read_whole_file is refused.
     Use overlapping ranges (e.g. 1-70, 60-130) to avoid cutting functions in half.
     """
-    filepath = _normalize_path(filepath)
+    filepath, path_error = _normalize_path(filepath)
+    if path_error:
+        return path_error
     err = _assert_is_file(filepath)
     if err:
         return err
@@ -221,8 +309,11 @@ def read_file_chunk(filepath: str, start_line: int, end_line: int) -> str:
         end = min(total, end_line)
         if start > end:
             return f"Error: start_line ({start}) > end_line ({end})."
-        chunk = "".join(lines[start - 1 : end])
-        return f"--- '{filepath}' lines {start}-{end} of {total} ---\n{chunk}--- end of chunk ---"
+        numbered = "".join(
+            f"L{i:>4}: {line}"
+            for i, line in enumerate(lines[start - 1 : end], start=start)
+        )
+        return f"--- '{filepath}' lines {start}-{end} of {total} ---\n{numbered}--- end of chunk ---"
     except Exception as e:
         return f"Error: {e}"
 
@@ -234,20 +325,42 @@ def get_lines(filepath: str, line_numbers: List[int]) -> str:
     Use this instead of read_file_chunk when you only need a few exact lines
     to copy verbatim into old_text for replace_in_file.
     """
-    filepath = _normalize_path(filepath)
+    filepath, path_error = _normalize_path(filepath)
+    if path_error:
+        return path_error
     err = _assert_is_file(filepath)
     if err:
         return err
     try:
         lines = _read_lines(filepath)
         total = len(lines)
-        result = []
-        for n in sorted(set(line_numbers))[:50]:
-            if 1 <= n <= total:
-                result.append(f"L{n}: {lines[n-1].rstrip()}")
-            else:
-                result.append(f"L{n}: (out of range -- file has {total} lines)")
-        return "\n".join(result)
+        unique_numbers = sorted(set(line_numbers))[:50]
+        if not unique_numbers:
+            return "Error: No line numbers were provided."
+
+        invalid = [n for n in unique_numbers if not (1 <= n <= total)]
+        if invalid:
+            return (
+                f"Error: line number(s) {invalid} out of range for '{filepath}' "
+                f"(file has {total} lines)."
+            )
+
+        blocks = []
+        start = prev = unique_numbers[0]
+        for n in unique_numbers[1:]:
+            if n == prev + 1:
+                prev = n
+                continue
+            blocks.append((start, prev))
+            start = prev = n
+        blocks.append((start, prev))
+
+        parts = []
+        for start, end in blocks:
+            exact = "".join(lines[start - 1 : end])
+            label = f"{start}" if start == end else f"{start}-{end}"
+            parts.append(f"Lines {label} (exact):\n```text\n{exact}```")
+        return "\n\n".join(parts)
     except Exception as e:
         return f"Error: {e}"
 
@@ -269,14 +382,13 @@ def read_file(file_path: str) -> str:
     Returns:
         str: The file contents, or an error message if the file is unavailable.
     """
-    from app.agents.coder_agent import _code_dir
-
-    if not _code_dir:
+    code_dir = get_code_dir()
+    if not code_dir:
         return "Error: code directory not set."
 
-    abs_path = os.path.abspath(os.path.join(_code_dir, file_path))
-    if not abs_path.startswith(os.path.abspath(_code_dir)):
-        return f"Error: Cannot access file {file_path}. Stick to the code/ directory."
+    abs_path, path_error = ensure_within_workspace(file_path, base_dir=code_dir)
+    if path_error:
+        return path_error
 
     if abs_path in _file_cache:
         return _file_cache[abs_path]
@@ -307,15 +419,13 @@ def read_directory(directory: str) -> str:
     Returns:
         str: A string containing the relative path and content of each readable file.
     """
-    from app.agents.coder_agent import _code_dir
-
-    if not _code_dir:
+    code_dir = get_code_dir()
+    if not code_dir:
         return "Error: code directory not set."
 
-    # Prevent reading outside the _code_dir
-    abs_dir = os.path.abspath(os.path.join(_code_dir, directory))
-    if not abs_dir.startswith(os.path.abspath(_code_dir)):
-        return f"Error: Cannot access directory {directory}. Stick to the code/ directory."
+    abs_dir, path_error = ensure_within_workspace(directory, base_dir=code_dir)
+    if path_error:
+        return path_error
 
     if not os.path.isdir(abs_dir):
         return f"Directory does not exist: {directory} (checked in codebase: {abs_dir})"

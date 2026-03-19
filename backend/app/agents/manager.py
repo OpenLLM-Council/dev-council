@@ -1,4 +1,5 @@
 import os
+import time
 from typing import TypedDict, Literal, Annotated, Any
 
 from langchain_core.messages import HumanMessage, AIMessage
@@ -14,7 +15,6 @@ from app.agents.milestone import get_milestone_agent
 from app.agents.flow_diagram import get_flow_diagram_agent
 from app.tools.save_file import save_file, markdown_to_pdf
 from app.agents.tech_stack_agent import get_tech_stack_agent
-from app.agents.tech_stack_agent import get_tech_stack_agent
 from app.agents.consensus_agent import get_consensus_agent, get_manager_decision_agent
 from app.agents.coder_agent import get_coder_agent
 from app.agents.instructions_agent import get_instructions_agent
@@ -23,6 +23,8 @@ from app.tools.file_writer import write_code_files
 from app.tools.file_reader import read_code_directory
 
 console = Console()
+MAX_DIAGRAM_WORKERS = 2
+DIAGRAM_RETRY_ATTEMPTS = 2
 
 
 def extract_text(response) -> str:
@@ -197,25 +199,44 @@ def call_flow_diagram(state: ManagerState):
         "Timing diagram"
     ]
 
+    def _generate_diagram_with_retry(diagram_type: str) -> str:
+        last_exc = None
+        for attempt in range(1, DIAGRAM_RETRY_ATTEMPTS + 1):
+            try:
+                response = flow_diagram_agent.invoke(
+                    {"diagram_type": diagram_type, "input": f"Create a {diagram_type} based on this:\n\n{project_plan}"}
+                )
+                return extract_text(response)
+            except Exception as exc:
+                last_exc = exc
+                if attempt < DIAGRAM_RETRY_ATTEMPTS:
+                    time.sleep(attempt)
+        raise last_exc
+
     all_diagrams = {}
+    failed_diagrams = []
     with console.status("[bold green]Designing system diagrams in parallel...", spinner="dots"):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(diagram_types)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(MAX_DIAGRAM_WORKERS, len(diagram_types))
+        ) as executor:
             future_to_dtype = {
-                executor.submit(
-                    flow_diagram_agent.invoke,
-                    {"diagram_type": dtype, "input": f"Create a {dtype} based on this:\n\n{project_plan}"}
-                ): dtype 
+                executor.submit(_generate_diagram_with_retry, dtype): dtype
                 for dtype in diagram_types
             }
             
             for future in concurrent.futures.as_completed(future_to_dtype):
                 dtype = future_to_dtype[future]
                 try:
-                    response = future.result()
-                    code = extract_text(response)
-                    all_diagrams[dtype] = code
+                    all_diagrams[dtype] = future.result()
                 except Exception as exc:
-                    console.print(f"[bold red]Diagram {dtype} generated an exception: {exc}[/bold red]")
+                    failed_diagrams.append(dtype)
+                    console.print(f"[bold yellow]Diagram {dtype} failed during parallel generation: {exc}[/bold yellow]")
+
+        for dtype in failed_diagrams:
+            try:
+                all_diagrams[dtype] = _generate_diagram_with_retry(dtype)
+            except Exception as exc:
+                console.print(f"[bold red]Diagram {dtype} generated an exception: {exc}[/bold red]")
 
         project_path = state.get("project_path", "outputs")
         generate_flow_diagram(all_diagrams, project_path)
@@ -644,6 +665,7 @@ def code_milestone(state: ManagerState):
 
     from app.agents.coder_agent import set_directories
     memory_dir = os.path.join(project_path, ".memory")
+    os.makedirs(code_dir, exist_ok=True)
     set_directories(code_dir, memory_dir)
 
     from app.tools.file_reader import _file_cache
