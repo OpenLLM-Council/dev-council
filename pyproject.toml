@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dev-council"
+version = "0.1.0"
+description = "Minimal BTP coding CLI with Ollama local/cloud support"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "httpx>=0.27.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+dev-council = "dev_council:main"
+
+[tool.setuptools]
+py-modules = [
+    "dev_council",
+    "agent",
+    "compaction",
+    "config",
+    "context",
+    "memory",
+    "providers",
+    "skills",
+    "tool_registry",
+    "tools",
+]
+packages = ["mcp", "memory", "skill", "task", "checkpoint"]
