@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import io
 import json
 import os
 import shlex
@@ -13,6 +14,11 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+# Force UTF-8 for Windows terminals to avoid UnicodeEncodeError
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import checkpoint as ckpt
 from agent import (
@@ -229,9 +235,25 @@ def _print_tool_result(result: str, config: dict) -> None:
     if "--- a/" in result and "+++ b/" in result:
         print(result)
         return
-    if result.startswith("Error") or config.get("verbose"):
-        snippet = result if len(result) <= 1200 else result[:1200] + "\n[...truncated...]"
-        print(snippet)
+
+    lines = result.strip().splitlines()
+    if not lines:
+        return
+
+    is_error = result.strip().startswith("Error")
+    limit = 10 if not config.get("verbose") else 50
+    preview_lines = lines[:limit]
+    preview = "\n".join(preview_lines)
+
+    if len(lines) > limit or len(preview) > 2000:
+        preview = preview[:2000]
+        if not preview.endswith("\n"):
+            preview += "\n"
+        preview += clr(f"  [...truncated {len(lines) - len(preview_lines)} lines...]", "dim")
+
+    color = "red" if is_error else "dim"
+    print(clr("  result:", color))
+    print(textwrap.indent(preview, "    "))
 
 
 def _run_agent_query(
@@ -262,7 +284,21 @@ def _run_agent_query(
         elif isinstance(event, ToolStart):
             if not quiet:
                 print()
-                info(f"[tool] {event.name}")
+                target = (
+                    event.inputs.get("file_path")
+                    or event.inputs.get("path")
+                    or event.inputs.get("command")
+                    or event.inputs.get("target")
+                    or event.inputs.get("query")
+                )
+                if target:
+                    info(f"[tool] {event.name}: {target}")
+                else:
+                    info(f"[tool] {event.name}")
+
+                if effective_config.get("verbose"):
+                    params_str = json.dumps(event.inputs, ensure_ascii=False)
+                    print(clr(f"  parameters: {params_str}", "dim"))
         elif isinstance(event, ToolEnd):
             if not quiet:
                 _print_tool_result(event.result, effective_config)
@@ -736,7 +772,43 @@ def _run_full_btp_cycle(query: str, state: AgentState, config: dict) -> None:
 
 
 def cmd_help(_args: str, _state: AgentState, _config: dict) -> bool:
-    print(__doc__)
+    help_text = """
+Commands:
+  /help               Show this help message
+  /clear              Clear conversation history
+  /model [model]      Set active model or choose from list
+  /config [k[=v]]     View or update configuration
+  /configure [k=v]    Configure LLM related parameters
+  /save               Save current session
+  /load <path>        Load session from JSON file
+  /resume             Resume latest session
+  /history            Show conversation history
+  /context            Show token usage and limit
+  /cost               Show estimated session cost
+  /verbose            Toggle verbose mode
+  /thinking           Toggle thinking process display
+  /permissions [m]    Set permission mode (auto, manual, accept-all, plan)
+  /cwd [path]         View or change current working directory
+  /skills             List available skills
+  /memory [query]     Search or list memories
+  /mcp [sub]          Manage MCP servers (reload, add, remove)
+  /tasks [sub]        Manage tasks (create, get, start, done, etc.)
+  /council [task]     Run multi-model council consensus
+  /srs [req]          Generate Software Requirements Specification
+  /milestones [ctx]   Generate project milestones
+  /techstack [ctx]    Generate tech stack recommendation
+  /qa [ctx]           Generate QA strategy and report
+  /deploy [ctx]       Generate deployment plan
+  /pipeline [req]     Run full BTP planning pipeline
+  /checkpoint [id]    Manage session checkpoints
+  /rewind [id]        Alias for /checkpoint
+  /plan [text|done]   Manage planning mode
+  /compact [focus]    Manually compact conversation context
+  /status             Show current status (model, tokens, etc.)
+  /doctor             Run system health check
+  /exit               Exit the CLI
+"""
+    print(help_text.strip())
     return True
 
 
@@ -788,6 +860,62 @@ def cmd_config(args: str, _state: AgentState, config: dict) -> bool:
     config[key] = parsed
     save_config(config)
     ok(f"Updated {key}")
+    return True
+
+
+def cmd_configure(args: str, _state: AgentState, config: dict) -> bool:
+    raw = args.strip()
+    llm_params = {
+        "model": "Active LLM model identifier",
+        "ollama_local_base_url": "Local Ollama API URL",
+        "ollama_cloud_base_url": "Cloud Ollama API URL",
+        "ollama_cloud_api_key": "API key for cloud endpoint",
+        "max_tokens": "Maximum context tokens",
+        "thinking_budget": "Token budget for thinking/reasoning",
+    }
+
+    if raw:
+        if "=" not in raw:
+            if raw in llm_params:
+                info(f"{raw} = {config.get(raw)} ({llm_params[raw]})")
+            else:
+                err(f"Unknown LLM parameter: {raw}")
+            return True
+        key, value = raw.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if key not in llm_params:
+            warn(f"'{key}' is not a standard LLM parameter, but updating anyway.")
+        
+        try:
+            if value.isdigit():
+                config[key] = int(value)
+            elif value.lower() in {"true", "false"}:
+                config[key] = value.lower() == "true"
+            else:
+                config[key] = value
+            save_config(config)
+            ok(f"Configured {key} = {config[key]}")
+        except Exception as exc:
+            err(f"Failed to update {key}: {exc}")
+        return True
+
+    info("Interactive LLM Configuration (press Enter to skip a value):")
+    for key, desc in llm_params.items():
+        current = config.get(key, "")
+        val = ask_input_interactive(f"{key} [{current}] ({desc}): ", config).strip()
+        if val:
+            try:
+                if val.isdigit():
+                    config[key] = int(val)
+                elif val.lower() in {"true", "false"}:
+                    config[key] = val.lower() == "true"
+                else:
+                    config[key] = val
+            except Exception as exc:
+                err(f"Invalid value for {key}: {exc}")
+    
+    save_config(config)
+    ok("Configuration updated.")
     return True
 
 
@@ -1222,6 +1350,7 @@ COMMANDS = {
     "clear": cmd_clear,
     "model": cmd_model,
     "config": cmd_config,
+    "configure": cmd_configure,
     "save": cmd_save,
     "load": cmd_load,
     "resume": cmd_resume,
