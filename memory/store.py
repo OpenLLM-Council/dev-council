@@ -173,7 +173,7 @@ def load_entries(scope: str = "user") -> list[MemoryEntry]:
         if fp.name == INDEX_FILENAME:
             continue
         try:
-            text = fp.read_text()
+            text = fp.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
         meta, body = parse_frontmatter(text)
@@ -242,7 +242,7 @@ def get_index_content(scope: str = "user") -> str:
     index_path = mem_dir / INDEX_FILENAME
     if not index_path.exists():
         return ""
-    return index_path.read_text().strip()
+    return index_path.read_text(encoding="utf-8", errors="replace").strip()
 
 
 def check_conflict(entry: "MemoryEntry", scope: str = "user") -> dict | None:
@@ -257,7 +257,7 @@ def check_conflict(entry: "MemoryEntry", scope: str = "user") -> dict | None:
     if not fp.exists():
         return None
     try:
-        meta, existing_content = parse_frontmatter(fp.read_text())
+        meta, existing_content = parse_frontmatter(fp.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return None
     if existing_content.strip() == entry.content.strip():
@@ -281,7 +281,7 @@ def touch_last_used(file_path: str) -> None:
     if not fp.exists():
         return
     try:
-        text = fp.read_text()
+        text = fp.read_text(encoding="utf-8", errors="replace")
         meta, body = parse_frontmatter(text)
         today = date.today().isoformat()
         if meta.get("last_used_at") == today:

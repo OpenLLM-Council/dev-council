@@ -10,3 +10,4 @@ reference/
 .pytest_cache/
 pytest-cache-files-*/
 btp/
+*jsonl

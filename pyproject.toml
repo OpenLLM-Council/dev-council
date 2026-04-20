@@ -7,7 +7,7 @@ name = "dev-council"
 version = "0.1.0"
 description = "Minimal BTP coding CLI with Ollama local/cloud support"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11, <3.13"
 license = { text = "MIT" }
 dependencies = [
     "datasets>=4.8.4",
@@ -33,3 +33,8 @@ py-modules = [
     "tools",
 ]
 packages = ["mcp", "memory", "skill", "task", "checkpoint"]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'"
+]
