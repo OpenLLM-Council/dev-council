@@ -82,7 +82,8 @@ def test_model_single_mode_selection(monkeypatch):
 
 def test_model_consensus_selection(monkeypatch):
     config = {"model": "local/old", "active_ollama_endpoint": "local"}
-    answers = iter(["2", "3", "1,3,2"])
+    # "2" = consensus mode, "3" = 3 models to vote, "1,3,2" = model selection, "n" = decline judge model
+    answers = iter(["2", "3", "1,3,2", "n"])
 
     monkeypatch.setattr(dev_council, "ask_input_interactive", lambda *a, **k: next(answers))
     monkeypatch.setattr(dev_council, "_fetch_models_for_endpoint", lambda *a, **k: ["a", "b", "c"])
@@ -92,6 +93,7 @@ def test_model_consensus_selection(monkeypatch):
     assert config["llm_mode"] == "consensus"
     assert config["consensus_models"] == ["local/a", "local/c", "local/b"]
     assert config["model"] == "local/a"
+    assert "judge_model" not in config  # declined judge
 
 
 def test_generation_prompt_consensus_continues_after_one_model_failure(monkeypatch):

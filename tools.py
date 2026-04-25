@@ -1033,6 +1033,13 @@ def execute_tool(
     """
     cfg = config or {}
 
+    # Normalize the tool name via registry lookup so case-insensitive names
+    # (e.g. "bash" -> "Bash") still hit the correct permission gate below.
+    from tool_registry import get_tool as _lookup
+    resolved = _lookup(name)
+    if resolved is not None:
+        name = resolved.name
+
     def _check(desc: str) -> bool:
         """Return True if action is allowed."""
         if permission_mode == "accept-all":

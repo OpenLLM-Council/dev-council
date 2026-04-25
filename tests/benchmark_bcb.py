@@ -75,7 +75,7 @@ def main():
 
     print(f"Loading BigCodeBench dataset (split: v0.1.2)...")
     try:
-        # BigCodeBench uses version numbers as split names (v0.1.0_hf, v0.1.1, v0.1.2, etc.)
+        # BigCodeBench uses version numbers as split names (v0.1.0_hf, v0.1.2, v0.1.2, etc.)
         # 'instruct' and 'complete' are prompt types within the same dataset rows.
         ds = load_dataset("bigcode/bigcodebench", split="v0.1.2")
     except Exception as e:

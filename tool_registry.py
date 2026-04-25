@@ -40,8 +40,16 @@ def register_tool(tool_def: ToolDef) -> None:
 
 
 def get_tool(name: str) -> Optional[ToolDef]:
-    """Look up a tool by name. Returns None if not found."""
-    return _registry.get(name)
+    """Look up a tool by name (case-insensitive). Returns None if not found."""
+    tool = _registry.get(name)
+    if tool is not None:
+        return tool
+    # Fallback: case-insensitive match (common with smaller LLMs calling 'bash' instead of 'Bash')
+    lower = name.lower()
+    for key, tool_def in _registry.items():
+        if key.lower() == lower:
+            return tool_def
+    return None
 
 
 def get_all_tools() -> List[ToolDef]:

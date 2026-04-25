@@ -71,7 +71,7 @@ from task import (
 from tools import ask_input_interactive
 
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 
 C = {
     "cyan": "\033[36m",
@@ -426,11 +426,13 @@ def _run_generation_prompt(prompt: str, config: dict, system: str = "") -> str:
     for model_name, proposal in proposals:
         synthesis_prompt.append(f"[{model_name}]\n{proposal}\n")
     synthesis_prompt.append("Return only the final synthesized answer.")
-    info(f"Synthesizing consensus with {proposals[0][0]}")
+    # Use the judge model for synthesis if configured, otherwise first successful proposer
+    judge = config.get("judge_model") or proposals[0][0]
+    info(f"Synthesizing consensus with {judge}")
     return _run_text_prompt(
         "\n".join(synthesis_prompt),
         config,
-        model=selected_models[0],
+        model=judge,
         system="You are a consensus editor. Produce the final answer only.",
     )
 
@@ -967,7 +969,34 @@ def _run_model_selection_flow(config: dict) -> None:
     if mode == "single":
         _choose_single_model(config)
         return
-    _choose_multiple_models(config)
+    selected = _choose_multiple_models(config)
+
+    # Ask if the user wants a separate judge/synthesis model
+    print()
+    info("Use a separate judge model for synthesis & implementation?")
+    print("  The judge model synthesizes proposals and executes the code stage.")
+    print("  If skipped, the first consensus model is used as the judge.")
+    raw = ask_input_interactive("Pick a judge model? [y/N]: ", config).strip().lower()
+    if raw in {"y", "yes"}:
+        endpoint = config.get("active_ollama_endpoint", "local")
+        models = _fetch_models_for_endpoint(endpoint, config)
+        print()
+        info(f"Available models on {endpoint}:")
+        for idx, model_name in enumerate(models, 1):
+            print(f"  [{idx:2d}] {model_name}")
+        while True:
+            raw_idx = ask_input_interactive("Select judge model number: ", config).strip()
+            if raw_idx.isdigit():
+                index = int(raw_idx) - 1
+                if 0 <= index < len(models):
+                    judge = f"{endpoint}/{models[index]}"
+                    config["judge_model"] = judge
+                    save_config(config)
+                    ok(f"Judge model set to {judge}")
+                    break
+            err("Invalid model selection.")
+    else:
+        config.pop("judge_model", None)
 
 
 def _run_council(task_text: str, state: AgentState, config: dict) -> None:
@@ -1016,7 +1045,7 @@ def _run_council(task_text: str, state: AgentState, config: dict) -> None:
         proposal_path.write_text(proposal + "\n", encoding="utf-8")
         proposals.append((model_name, proposal))
 
-    synthesis_model = selected_models[0]
+    synthesis_model = config.get("judge_model") or selected_models[0]
     synthesis_prompt = ["Synthesize these model proposals into one consensus brief."]
     synthesis_prompt.append(f"Original task:\n{task_text}\n")
     for model_name, proposal in proposals:
@@ -1087,20 +1116,22 @@ def _run_consensus_agent_query(task_text: str, state: AgentState, config: dict) 
     for model_name, proposal in proposals:
         synthesis_prompt.append(f"[{model_name}]\n{proposal}\n")
     synthesis_prompt.append("Return concise implementation instructions with agreed changes, risks, and tests.")
-    info(f"Synthesizing implementation consensus with {proposals[0][0]}")
+    # Use judge model for synthesis and implementation, or fall back to first successful proposer
+    judge = config.get("judge_model") or proposals[0][0]
+    info(f"Synthesizing implementation consensus with {judge}")
     consensus = _run_text_prompt(
         "\n".join(synthesis_prompt),
         config,
-        model=proposals[0][0],
+        model=judge,
         system="You are a consensus editor for implementation planning.",
         use_skills=True,
     )
-    info(f"Starting implementation with {proposals[0][0]}")
+    info(f"Starting implementation with {judge}")
     _run_agent_query(
         f"{task_text}\n\nConsensus implementation brief:\n{consensus}",
         state,
         config,
-        model_override=proposals[0][0],
+        model_override=judge,
         use_skills=True,
     )
 
@@ -1129,6 +1160,7 @@ def _save_pipeline_state(
         "llm_mode": config.get("llm_mode", "single"),
         "model": config.get("model", ""),
         "consensus_models": config.get("consensus_models", []),
+        "judge_model": config.get("judge_model", ""),
         "saved_at": datetime.now().isoformat(timespec="seconds"),
     }
     path = _pipeline_state_path()
@@ -1201,7 +1233,7 @@ def _run_full_btp_cycle(
     if "code" not in completed:
         implementation_prompt = textwrap.dedent(
             f"""
-            Build the requested product in this repository.
+            BUILD the requested product NOW by creating actual files in this repository.
 
             User request:
             {query}
@@ -1209,11 +1241,18 @@ def _run_full_btp_cycle(
             BTP planning context:
             {_stage_context(query)}
 
-            Important:
-            - Use the stage artifacts as the source of truth.
-            - If project scaffolding is needed, use only non-interactive commands.
-            - Pass required parameters explicitly as flags.
-            - Use `--yes` or `-y` whenever the tooling supports it.
+            CRITICAL INSTRUCTIONS — you MUST follow these:
+            1. Use the Write tool to create each source file. Do NOT describe code — write it to files.
+            2. Use the Bash tool to run shell commands (e.g. npm init, pip install, mkdir).
+               The tool name is "Bash" (capital B), NOT "bash".
+            3. Use the Edit tool to modify existing files.
+            4. Do NOT call the Skill tool during implementation — skills are already applied.
+            5. Do NOT just plan or describe — you must produce working files.
+            6. Use non-interactive commands only. Pass `--yes` or `-y` whenever supported.
+            7. After creating files, verify by reading them back or running tests.
+
+            Available tools for this task: Write, Bash, Edit, Read, Glob, Grep.
+            Start by creating the project structure, then write each file.
             """
         ).strip()
         try:
@@ -1724,6 +1763,8 @@ def cmd_pipeline(args: str, state: AgentState, config: dict) -> bool:
             info(f"  Query: {saved['query'][:100]}")
             info(f"  Completed: {', '.join(completed) or 'none'}")
             info(f"  Remaining: {', '.join(remaining) or 'all done'}")
+            if saved.get("judge_model"):
+                info(f"  Judge model: {saved['judge_model']}")
         return True
 
     # /pipeline resume — resume from checkpoint
@@ -1746,6 +1787,8 @@ def cmd_pipeline(args: str, state: AgentState, config: dict) -> bool:
             config["model"] = saved["model"]
         if saved.get("consensus_models"):
             config["consensus_models"] = saved["consensus_models"]
+        if saved.get("judge_model"):
+            config["judge_model"] = saved["judge_model"]
         info(f"Resuming pipeline for: {query[:100]}")
         _run_full_btp_cycle(query, state, config, resume_from=completed)
         _record_snapshot(state, config, f"/pipeline resume {query[:60]}")
@@ -1777,6 +1820,8 @@ def cmd_pipeline(args: str, state: AgentState, config: dict) -> bool:
                     config["model"] = saved["model"]
                 if saved.get("consensus_models"):
                     config["consensus_models"] = saved["consensus_models"]
+                if saved.get("judge_model"):
+                    config["judge_model"] = saved["judge_model"]
                 _run_full_btp_cycle(saved["query"], state, config, resume_from=completed)
                 _record_snapshot(state, config, f"/pipeline resume {saved['query'][:60]}")
                 return True
