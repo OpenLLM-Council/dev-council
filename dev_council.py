@@ -71,7 +71,7 @@ from task import (
 from tools import ask_input_interactive
 
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 C = {
     "cyan": "\033[36m",
@@ -402,12 +402,23 @@ def _run_generation_prompt(prompt: str, config: dict, system: str = "") -> str:
         return _run_text_prompt(prompt, config, system=system)
 
     proposals: list[tuple[str, str]] = []
+    failures: list[tuple[str, str]] = []
     for index, model_name in enumerate(selected_models, 1):
         info(f"Consensus prompt {index}/{len(selected_models)}: {model_name}")
-        proposal = _run_text_prompt(prompt, config, model=model_name, system=system)
-        proposals.append((model_name, proposal))
+        try:
+            proposal = _run_text_prompt(prompt, config, model=model_name, system=system)
+            proposals.append((model_name, proposal))
+        except Exception as exc:
+            failures.append((model_name, str(exc)))
+            warn(f"Consensus model failed: {model_name} -> {exc}")
+
+    if not proposals:
+        details = "; ".join(f"{model_name}: {error}" for model_name, error in failures)
+        raise RuntimeError(f"All consensus models failed for this prompt. {details}")
 
     if len(proposals) == 1:
+        if failures:
+            warn("Continuing with the only successful consensus model response.")
         return proposals[0][1]
 
     synthesis_prompt = ["Synthesize these model responses into one final output."]
@@ -415,6 +426,7 @@ def _run_generation_prompt(prompt: str, config: dict, system: str = "") -> str:
     for model_name, proposal in proposals:
         synthesis_prompt.append(f"[{model_name}]\n{proposal}\n")
     synthesis_prompt.append("Return only the final synthesized answer.")
+    info(f"Synthesizing consensus with {proposals[0][0]}")
     return _run_text_prompt(
         "\n".join(synthesis_prompt),
         config,
@@ -1050,66 +1062,200 @@ def _run_consensus_agent_query(task_text: str, state: AgentState, config: dict) 
         return
 
     proposals: list[tuple[str, str]] = []
+    failures: list[tuple[str, str]] = []
     for index, model_name in enumerate(selected_models, 1):
         info(f"Collecting implementation proposal {index}/{len(selected_models)} from {model_name}")
-        proposal = _run_text_prompt(
-            task_text,
-            config,
-            model=model_name,
-            system="You are one model in a coding consensus. Propose the implementation approach.",
-            use_skills=True,
-        )
-        proposals.append((model_name, proposal))
+        try:
+            proposal = _run_text_prompt(
+                task_text,
+                config,
+                model=model_name,
+                system="You are one model in a coding consensus. Propose the implementation approach.",
+                use_skills=True,
+            )
+            proposals.append((model_name, proposal))
+        except Exception as exc:
+            failures.append((model_name, str(exc)))
+            warn(f"Consensus model failed: {model_name} -> {exc}")
+
+    if not proposals:
+        details = "; ".join(f"{model_name}: {error}" for model_name, error in failures)
+        raise RuntimeError(f"All consensus models failed for implementation planning. {details}")
 
     synthesis_prompt = ["Synthesize these implementation proposals into one executable brief."]
     synthesis_prompt.append(f"Original task:\n{task_text}\n")
     for model_name, proposal in proposals:
         synthesis_prompt.append(f"[{model_name}]\n{proposal}\n")
     synthesis_prompt.append("Return concise implementation instructions with agreed changes, risks, and tests.")
+    info(f"Synthesizing implementation consensus with {proposals[0][0]}")
     consensus = _run_text_prompt(
         "\n".join(synthesis_prompt),
         config,
-        model=selected_models[0],
+        model=proposals[0][0],
         system="You are a consensus editor for implementation planning.",
         use_skills=True,
     )
+    info(f"Starting implementation with {proposals[0][0]}")
     _run_agent_query(
         f"{task_text}\n\nConsensus implementation brief:\n{consensus}",
         state,
         config,
-        model_override=selected_models[0],
+        model_override=proposals[0][0],
         use_skills=True,
     )
 
 
-def _run_full_btp_cycle(query: str, state: AgentState, config: dict) -> None:
-    info("Running full BTP cycle: SRS -> Tech Stack -> Code -> QA -> Deployment")
-    _run_stage("srs", query, config)
-    _run_tech_stack_selection(_stage_context(query), config)
+# ── Pipeline checkpoint system ───────────────────────────────────────────────
 
-    implementation_prompt = textwrap.dedent(
-        f"""
-        Build the requested product in this repository.
+_PIPELINE_STATE_FILE = "btp/.pipeline_state.json"
 
-        User request:
-        {query}
+# Ordered list of pipeline stages — "code" is the implementation step
+_PIPELINE_STAGES = ["srs", "techstack", "code", "qa", "deploy"]
 
-        BTP planning context:
-        {_stage_context(query)}
 
-        Important:
-        - Use the stage artifacts as the source of truth.
-        - If project scaffolding is needed, use only non-interactive commands.
-        - Pass required parameters explicitly as flags.
-        - Use `--yes` or `-y` whenever the tooling supports it.
-        """
-    ).strip()
-    if config.get("llm_mode") == "consensus":
-        _run_consensus_agent_query(implementation_prompt, state, config)
+def _pipeline_state_path() -> Path:
+    return Path.cwd() / _PIPELINE_STATE_FILE
+
+
+def _save_pipeline_state(
+    query: str,
+    completed_stages: list[str],
+    config: dict,
+) -> None:
+    """Persist current pipeline progress so it can be resumed after a crash."""
+    data = {
+        "query": query,
+        "completed_stages": completed_stages,
+        "llm_mode": config.get("llm_mode", "single"),
+        "model": config.get("model", ""),
+        "consensus_models": config.get("consensus_models", []),
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    path = _pipeline_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _load_pipeline_state() -> dict | None:
+    """Load a previously saved pipeline state, or None if no checkpoint exists."""
+    path = _pipeline_state_path()
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _clear_pipeline_state() -> None:
+    path = _pipeline_state_path()
+    if path.exists():
+        path.unlink()
+
+
+def _run_full_btp_cycle(
+    query: str,
+    state: AgentState,
+    config: dict,
+    resume_from: list[str] | None = None,
+) -> None:
+    """Run the full BTP pipeline with per-stage checkpointing.
+
+    If *resume_from* is given it is the list of already-completed stage names
+    and those stages will be skipped.
+    """
+    completed: list[str] = list(resume_from) if resume_from else []
+
+    if completed:
+        remaining = [s for s in _PIPELINE_STAGES if s not in completed]
+        info(f"Resuming BTP pipeline from stage: {remaining[0] if remaining else 'done'}")
+        info(f"  Already completed: {', '.join(completed)}")
     else:
-        _run_agent_query(implementation_prompt, state, config, use_skills=True)
-    _run_stage("qa", _stage_context(query), config)
-    _run_stage("deploy", _stage_context(query), config)
+        info("Running full BTP cycle: SRS -> Tech Stack -> Code -> QA -> Deployment")
+
+    # ── Stage: SRS ──────────────────────────────────────────────────────
+    if "srs" not in completed:
+        try:
+            _run_stage("srs", query, config)
+            completed.append("srs")
+            _save_pipeline_state(query, completed, config)
+        except Exception as exc:
+            _save_pipeline_state(query, completed, config)
+            err(f"SRS stage failed: {exc}")
+            info(f"Pipeline checkpoint saved. Run '/pipeline resume' to retry from this stage.")
+            return
+
+    # ── Stage: Tech Stack ───────────────────────────────────────────────
+    if "techstack" not in completed:
+        try:
+            _run_tech_stack_selection(_stage_context(query), config)
+            completed.append("techstack")
+            _save_pipeline_state(query, completed, config)
+        except Exception as exc:
+            _save_pipeline_state(query, completed, config)
+            err(f"Tech Stack stage failed: {exc}")
+            info(f"Pipeline checkpoint saved. Run '/pipeline resume' to retry from this stage.")
+            return
+
+    # ── Stage: Code (implementation) ────────────────────────────────────
+    if "code" not in completed:
+        implementation_prompt = textwrap.dedent(
+            f"""
+            Build the requested product in this repository.
+
+            User request:
+            {query}
+
+            BTP planning context:
+            {_stage_context(query)}
+
+            Important:
+            - Use the stage artifacts as the source of truth.
+            - If project scaffolding is needed, use only non-interactive commands.
+            - Pass required parameters explicitly as flags.
+            - Use `--yes` or `-y` whenever the tooling supports it.
+            """
+        ).strip()
+        try:
+            if config.get("llm_mode") == "consensus":
+                _run_consensus_agent_query(implementation_prompt, state, config)
+            else:
+                _run_agent_query(implementation_prompt, state, config, use_skills=True)
+            completed.append("code")
+            _save_pipeline_state(query, completed, config)
+        except Exception as exc:
+            _save_pipeline_state(query, completed, config)
+            err(f"Code stage failed: {exc}")
+            info(f"Pipeline checkpoint saved. Run '/pipeline resume' to retry from this stage.")
+            return
+
+    # ── Stage: QA ───────────────────────────────────────────────────────
+    if "qa" not in completed:
+        try:
+            _run_stage("qa", _stage_context(query), config)
+            completed.append("qa")
+            _save_pipeline_state(query, completed, config)
+        except Exception as exc:
+            _save_pipeline_state(query, completed, config)
+            err(f"QA stage failed: {exc}")
+            info(f"Pipeline checkpoint saved. Run '/pipeline resume' to retry from this stage.")
+            return
+
+    # ── Stage: Deploy ───────────────────────────────────────────────────
+    if "deploy" not in completed:
+        try:
+            _run_stage("deploy", _stage_context(query), config)
+            completed.append("deploy")
+            _save_pipeline_state(query, completed, config)
+        except Exception as exc:
+            _save_pipeline_state(query, completed, config)
+            err(f"Deploy stage failed: {exc}")
+            info(f"Pipeline checkpoint saved. Run '/pipeline resume' to retry from this stage.")
+            return
+
+    # All stages done — clean up the checkpoint file
+    _clear_pipeline_state()
+    ok("All BTP pipeline stages completed successfully.")
 
 
 def cmd_help(_args: str, _state: AgentState, _config: dict) -> bool:
@@ -1137,6 +1283,11 @@ Context
 Pipeline
   Big product requests run SRS -> Tech Stack selection -> Code -> QA -> Deployment.
   Simple requests bypass the pipeline and run directly.
+  Each stage is checkpointed — if a stage fails, run '/pipeline resume' to continue.
+    /pipeline <request>    Start a new pipeline (auto-detects existing checkpoint)
+    /pipeline resume       Resume from the last saved checkpoint
+    /pipeline status       Show checkpoint state
+    /pipeline reset        Discard saved checkpoint
 """
     print(help_text.strip())
     return True
@@ -1551,13 +1702,93 @@ def cmd_deploy(args: str, _state: AgentState, config: dict) -> bool:
 
 
 def cmd_pipeline(args: str, state: AgentState, config: dict) -> bool:
-    request = args.strip() or ask_input_interactive("Pipeline request: ", config).strip()
+    raw = args.strip()
+    parts = raw.split(None, 1)
+    subcmd = parts[0].lower() if parts else ""
+
+    # /pipeline reset — discard any saved checkpoint
+    if subcmd == "reset":
+        _clear_pipeline_state()
+        ok("Pipeline checkpoint cleared.")
+        return True
+
+    # /pipeline status — show checkpoint state
+    if subcmd == "status":
+        saved = _load_pipeline_state()
+        if saved is None:
+            info("No pipeline checkpoint found.")
+        else:
+            completed = saved.get("completed_stages", [])
+            remaining = [s for s in _PIPELINE_STAGES if s not in completed]
+            info(f"Pipeline checkpoint found (saved {saved.get('saved_at', '?')})")
+            info(f"  Query: {saved['query'][:100]}")
+            info(f"  Completed: {', '.join(completed) or 'none'}")
+            info(f"  Remaining: {', '.join(remaining) or 'all done'}")
+        return True
+
+    # /pipeline resume — resume from checkpoint
+    if subcmd == "resume":
+        saved = _load_pipeline_state()
+        if saved is None:
+            err("No pipeline checkpoint to resume.")
+            return True
+        completed = saved.get("completed_stages", [])
+        remaining = [s for s in _PIPELINE_STAGES if s not in completed]
+        if not remaining:
+            ok("Pipeline already completed. Use '/pipeline reset' to start fresh.")
+            _clear_pipeline_state()
+            return True
+        query = saved["query"]
+        # Restore model settings from checkpoint
+        if saved.get("llm_mode"):
+            config["llm_mode"] = saved["llm_mode"]
+        if saved.get("model"):
+            config["model"] = saved["model"]
+        if saved.get("consensus_models"):
+            config["consensus_models"] = saved["consensus_models"]
+        info(f"Resuming pipeline for: {query[:100]}")
+        _run_full_btp_cycle(query, state, config, resume_from=completed)
+        _record_snapshot(state, config, f"/pipeline resume {query[:60]}")
+        return True
+
+    # Regular /pipeline <request> — check for existing checkpoint first
+    request = raw or ask_input_interactive("Pipeline request: ", config).strip()
     if not request:
         return True
+
+    saved = _load_pipeline_state()
+    if saved is not None:
+        completed = saved.get("completed_stages", [])
+        remaining = [s for s in _PIPELINE_STAGES if s not in completed]
+        if remaining:
+            print()
+            warn(f"An unfinished pipeline was found (saved {saved.get('saved_at', '?')})")
+            info(f"  Query: {saved['query'][:100]}")
+            info(f"  Completed: {', '.join(completed)}")
+            info(f"  Next stage: {remaining[0]}")
+            choice = ask_input_interactive(
+                "Resume this pipeline? [y]es / [n]ew / [c]ancel: ", config
+            ).strip().lower()
+            if choice in {"y", "yes", "resume"}:
+                # Restore model settings
+                if saved.get("llm_mode"):
+                    config["llm_mode"] = saved["llm_mode"]
+                if saved.get("model"):
+                    config["model"] = saved["model"]
+                if saved.get("consensus_models"):
+                    config["consensus_models"] = saved["consensus_models"]
+                _run_full_btp_cycle(saved["query"], state, config, resume_from=completed)
+                _record_snapshot(state, config, f"/pipeline resume {saved['query'][:60]}")
+                return True
+            elif choice in {"n", "new"}:
+                _clear_pipeline_state()
+            else:
+                info("Pipeline cancelled.")
+                return True
+
     _run_model_selection_flow(config)
     _run_full_btp_cycle(request, state, config)
     _record_snapshot(state, config, f"/pipeline {request[:80]}")
-    ok("BTP pipeline complete.")
     return True
 
 

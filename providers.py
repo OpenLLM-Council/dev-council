@@ -2,9 +2,17 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Generator
+
+
+# HTTP status codes that are worth retrying (transient / rate-limit)
+_RETRYABLE_STATUS_CODES = {408, 429, 502, 503, 504}
+_MAX_RETRIES = 2
+_RETRY_BASE_DELAY = 2.0  # seconds; doubles each attempt
 
 
 PROVIDERS: dict[str, dict] = {
@@ -135,6 +143,13 @@ def messages_to_ollama(messages: list) -> list[dict]:
 
 
 def messages_to_ollama_plain(messages: list) -> list[dict]:
+    """Convert messages to plain Ollama format, stripping tool protocol.
+
+    Used as a fallback when the model rejects tool-formatted messages
+    with HTTP 400/500.  Tool calls become text annotations, tool results
+    become user messages so the model can still see the conversation
+    context without the structured tool protocol.
+    """
     result = []
     for message in messages:
         role = message["role"]
@@ -157,6 +172,68 @@ def messages_to_ollama_plain(messages: list) -> list[dict]:
             content = message.get("content", "")
             result.append({"role": "user", "content": f"[Tool result from {name}]\n{content}"})
     return result
+
+
+def _http_error_details(exc: urllib.error.HTTPError) -> str:
+    """Extract a human-readable diagnostic from an HTTPError."""
+    try:
+        body = exc.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        body = ""
+    if body:
+        return f"HTTP {exc.code} {exc.reason}: {body[:500]}"
+    return f"HTTP {exc.code} {exc.reason}"
+
+
+def _make_request(url: str, payload: dict, headers: dict, timeout: int = 300):
+    """Send a POST request and return the response, with retries for transient errors."""
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+    )
+    last_exc: Exception | None = None
+
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
+                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                print(
+                    f"[providers] HTTP {exc.code} from server, retrying in {delay:.0f}s "
+                    f"(attempt {attempt + 1}/{_MAX_RETRIES})...",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                # Rebuild request since the previous was consumed
+                request = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers=headers,
+                )
+                last_exc = exc
+                continue
+            raise  # non-retryable or exhausted retries
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if attempt < _MAX_RETRIES:
+                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                print(
+                    f"[providers] Connection error ({type(exc).__name__}), retrying in {delay:.0f}s "
+                    f"(attempt {attempt + 1}/{_MAX_RETRIES})...",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                request = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers=headers,
+                )
+                last_exc = exc
+                continue
+            raise
+
+    raise last_exc  # should never reach here
 
 
 def stream_ollama(
@@ -188,11 +265,7 @@ def stream_ollama(
     if tool_schemas and not config.get("no_tools"):
         payload["tools"] = tools_to_ollama(tool_schemas)
 
-    request = urllib.request.Request(
-        f"{base_url}/api/chat",
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-    )
+    url = f"{base_url}/api/chat"
 
     text = ""
     tool_calls: list[dict] = []
@@ -200,23 +273,40 @@ def stream_ollama(
     out_tokens = 0
 
     try:
-        response_cm = urllib.request.urlopen(request, timeout=300)
+        response_cm = _make_request(url, payload, headers)
     except urllib.error.HTTPError as exc:
+        # If the model rejected tool protocol (400/500), fall back to plain messages
         has_tool_protocol = "tools" in payload or any(
             message.get("role") == "tool" or message.get("tool_calls")
             for message in messages
         )
         if exc.code in {400, 500} and has_tool_protocol:
-            payload.pop("tools", None)
-            payload["messages"] = [{"role": "system", "content": system}] + messages_to_ollama_plain(messages)
-            request = urllib.request.Request(
-                f"{base_url}/api/chat",
-                data=json.dumps(payload).encode("utf-8"),
-                headers=headers,
+            details = _http_error_details(exc)
+            print(
+                f"[providers] {model}: {details} — retrying without tool protocol...",
+                file=sys.stderr,
             )
-            response_cm = urllib.request.urlopen(request, timeout=300)
+            payload.pop("tools", None)
+            payload["messages"] = (
+                [{"role": "system", "content": system}]
+                + messages_to_ollama_plain(messages)
+            )
+            try:
+                response_cm = _make_request(url, payload, headers)
+            except (urllib.error.HTTPError, Exception) as retry_exc:
+                raise RuntimeError(
+                    f"{PROVIDERS[provider_name]['label']} request failed for model '{model}': "
+                    f"{_http_error_details(retry_exc) if isinstance(retry_exc, urllib.error.HTTPError) else str(retry_exc)}"
+                ) from retry_exc
         else:
-            raise
+            raise RuntimeError(
+                f"{PROVIDERS[provider_name]['label']} request failed for model '{model}': "
+                f"{_http_error_details(exc)}"
+            ) from exc
+    except (RuntimeError, Exception) as exc:
+        raise RuntimeError(
+            f"{PROVIDERS[provider_name]['label']} request failed for model '{model}': {exc}"
+        ) from exc
 
     with response_cm as response:
         for raw_line in response:

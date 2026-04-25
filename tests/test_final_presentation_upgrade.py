@@ -94,6 +94,33 @@ def test_model_consensus_selection(monkeypatch):
     assert config["model"] == "local/a"
 
 
+def test_generation_prompt_consensus_continues_after_one_model_failure(monkeypatch):
+    calls = []
+    warnings = []
+
+    def fake_run_text_prompt(prompt, config, model="", system="", **kwargs):
+        calls.append(model)
+        if model == "local/bad":
+            raise RuntimeError("HTTP 500 from upstream")
+        return f"reply from {model}"
+
+    monkeypatch.setattr(dev_council, "_run_text_prompt", fake_run_text_prompt)
+    monkeypatch.setattr(dev_council, "warn", warnings.append)
+
+    result = dev_council._run_generation_prompt(
+        "Write an SRS",
+        {
+            "llm_mode": "consensus",
+            "consensus_models": ["local/bad", "local/good"],
+            "model": "local/good",
+        },
+    )
+
+    assert result == "reply from local/good"
+    assert calls == ["local/bad", "local/good"]
+    assert any("Consensus model failed: local/bad" in message for message in warnings)
+
+
 def _repo_tmp_dir(name: str) -> Path:
     path = Path.cwd() / ".test-tmp" / f"{name}-{uuid.uuid4().hex}"
     path.mkdir(parents=True, exist_ok=True)
