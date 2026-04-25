@@ -157,6 +157,10 @@ def get_platform_hints() -> str:
         "- Use `dir` or `Get-ChildItem` instead of `ls`\n"
         "- Use `Get-ChildItem -Recurse` instead of `find`\n"
         "- Use `Select-String` or `rg` instead of `grep`\n"
+        "- Use `mkdir` but note it fails if the directory already exists. Use `if not exist dir mkdir dir` or ignore the error.\n"
+        "- Use `timeout /t 5` instead of `timeout 5` or `sleep 5`\n"
+        "- If starting a web server (like node, python, etc.), DO NOT run it without a timeout or it will hang indefinitely.\n"
+        "- Avoid long command chains with `&&`; prefer separate Bash tool calls\n"
         "- Use `copy`, `move`, and `del` for basic file operations\n"
         "- If a Unix-style command fails, retry once with the Windows equivalent before answering\n"
     )

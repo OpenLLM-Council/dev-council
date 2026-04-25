@@ -71,7 +71,7 @@ from task import (
 from tools import ask_input_interactive
 
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 
 C = {
     "cyan": "\033[36m",
@@ -677,6 +677,7 @@ _STAGE_SPECS = {
         "prompt": (
             "Generate exactly 2 or 3 distinct technology stack options for this project context.\n\n"
             "{context}\n\n"
+            "CRITICAL: Ensure strict internal consistency! The technologies listed in the Frontend, Backend, and DB fields MUST exactly match what is implied by the Option Name.\n\n"
             "Use this exact structure for each option:\n"
             "Option N - <name>\n"
             "Frontend: <frontend>\n"

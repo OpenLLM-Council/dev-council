@@ -41,7 +41,7 @@ def main():
         return
 
     print("Loading BigCodeBench dataset tests...")
-    ds = load_dataset("bigcode/bigcodebench", split="v0.1.2")
+    ds = load_dataset("bigcode/bigcodebench", split="v0.1.3")
     task_map = {row["task_id"]: row for row in ds}
 
     results = []
