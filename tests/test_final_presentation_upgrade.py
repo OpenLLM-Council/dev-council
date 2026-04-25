@@ -8,8 +8,8 @@ import dev_council
 import providers
 import tools
 from agent import AgentState
-from mcp.client import MCPClient
-from mcp.types import MCPServerConfig
+from mcp.client import HttpTransport, MCPClient
+from mcp.types import INIT_PARAMS, MCPServerConfig, MCPTransport
 from skill.loader import load_skills
 
 
@@ -271,3 +271,32 @@ for line in sys.stdin:
         assert client.call_tool("echo", {"text": "hello"}) == "echo:hello"
     finally:
         client.disconnect()
+
+
+def test_mcp_http_transport_parses_event_stream_response():
+    transport = HttpTransport(
+        MCPServerConfig(name="remote", transport=MCPTransport.HTTP, url="https://example.com/mcp", timeout=5)
+    )
+
+    class FakeResponse:
+        headers = {"content-type": "text/event-stream"}
+        text = (
+            'event: message\n'
+            'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"remote","version":"1.0.0"}}}\n\n'
+        )
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __init__(self):
+            self.seen_headers = None
+
+        def post(self, url, json, timeout):
+            return FakeResponse()
+
+    fake_client = FakeClient()
+    transport._client = fake_client
+    result = transport.request("initialize", INIT_PARAMS, timeout=5)
+
+    assert result["protocolVersion"] == "2024-11-05"

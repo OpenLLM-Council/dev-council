@@ -152,14 +152,40 @@ class HttpTransport:
         if self._client is None:
             try:
                 import httpx
+                headers = dict(self._config.headers)
+                if self._config.transport in (MCPTransport.HTTP, MCPTransport.SSE):
+                    headers.setdefault("Accept", "application/json, text/event-stream")
                 self._client = httpx.Client(
-                    headers=self._config.headers,
+                    headers=headers,
                     timeout=self._config.timeout,
                     follow_redirects=True,
                 )
             except ImportError:
                 raise RuntimeError("httpx is required for HTTP/SSE MCP transport: pip install httpx")
         return self._client
+
+    def _parse_event_stream(self, body: str) -> dict:
+        """Decode a single-result SSE payload returned by streamable HTTP MCP servers."""
+        event_type = None
+        data_lines = []
+        for raw_line in body.splitlines():
+            line = raw_line.strip()
+            if not line:
+                if data_lines:
+                    break
+                continue
+            if line.startswith("event:"):
+                event_type = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+
+        if not data_lines:
+            raise RuntimeError("MCP HTTP server returned an empty event stream response")
+
+        payload = "\n".join(data_lines)
+        if event_type not in (None, "message"):
+            raise RuntimeError(f"Unexpected MCP event stream type: {event_type}")
+        return json.loads(payload)
 
     def start(self) -> None:
         """For SSE transport: connect to the /sse endpoint and get session URL."""
@@ -242,7 +268,11 @@ class HttpTransport:
             # For HTTP: POST and get response directly
             resp = client.post(self._session_url or self._config.url, json=msg, timeout=wait_secs)
             resp.raise_for_status()
-            result = resp.json()
+            content_type = (resp.headers.get("content-type") or "").lower()
+            if "text/event-stream" in content_type:
+                result = self._parse_event_stream(resp.text)
+            else:
+                result = resp.json()
 
         if result is None:
             raise TimeoutError(f"MCP server '{self._config.name}' timed out on '{method}'")
