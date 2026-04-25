@@ -28,9 +28,22 @@ class SkillDef:
 
 def _get_skill_paths() -> list[Path]:
     return [
+        Path.cwd() / ".agents" / "skills",
+        Path.cwd() / ".codex" / "skills",
         Path.cwd() / ".dev-council" / "skills",   # project-level (priority)
+        Path.home() / ".agents" / "skills",
+        Path.home() / ".codex" / "skills",
         Path.home() / ".dev-council" / "skills",   # user-level
     ]
+
+
+def _iter_skill_files(skill_dir: Path) -> list[Path]:
+    files: list[Path] = []
+    if not skill_dir.is_dir():
+        return files
+    files.extend(sorted(skill_dir.glob("*.md")))
+    files.extend(sorted(skill_dir.glob("*/SKILL.md")))
+    return files
 
 
 # ── List field parser ──────────────────────────────────────────────────────
@@ -69,12 +82,28 @@ def _parse_skill_file(path: Path, source: str = "user") -> Optional[SkillDef]:
     prompt = parts[2].strip()
 
     fields: dict[str, str] = {}
-    for line in frontmatter_raw.splitlines():
-        line = line.strip()
+    lines = frontmatter_raw.splitlines()
+    idx = 0
+    while idx < len(lines):
+        raw_line = lines[idx]
+        line = raw_line.strip()
+        idx += 1
         if not line or ":" not in line:
             continue
         key, _, val = line.partition(":")
-        fields[key.strip().lower()] = val.strip()
+        key = key.strip().lower()
+        val = val.strip()
+        if val == "|":
+            block: list[str] = []
+            while idx < len(lines):
+                candidate = lines[idx]
+                if candidate and not candidate.startswith((" ", "\t")):
+                    break
+                block.append(candidate.strip())
+                idx += 1
+            fields[key] = " ".join(part for part in block if part).strip()
+        else:
+            fields[key] = val.strip().strip('"').strip("'")
 
     name = fields.get("name", "")
     if not name:
@@ -132,13 +161,11 @@ def load_skills(include_builtins: bool = True) -> list[SkillDef]:
         for sk in _BUILTIN_SKILLS:
             seen[sk.name] = sk
 
-    # User-level next, project-level last (highest priority)
-    skill_paths = _get_skill_paths()
-    for i, skill_dir in enumerate(reversed(skill_paths)):
-        src = "user" if i == 0 else "project"
-        if not skill_dir.is_dir():
-            continue
-        for md_file in sorted(skill_dir.glob("*.md")):
+    # Later paths override earlier ones. User-level first, project-level last.
+    skill_paths = list(reversed(_get_skill_paths()))
+    for skill_dir in skill_paths:
+        src = "project" if str(skill_dir).startswith(str(Path.cwd())) else "user"
+        for md_file in _iter_skill_files(skill_dir):
             skill = _parse_skill_file(md_file, source=src)
             if skill:
                 seen[skill.name] = skill

@@ -12,6 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "datasets>=4.8.4",
     "httpx>=0.27.0",
+    "pytest>=9.0.3",
     "rich>=13.0.0",
     "tqdm>=4.67.3",
 ]
@@ -38,3 +39,7 @@ packages = ["mcp", "memory", "skill", "task", "checkpoint"]
 required-environments = [
     "sys_platform == 'win32' and platform_machine == 'AMD64'"
 ]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+norecursedirs = [".git", ".pytest_cache", "pytest-cache-files-*", "__pycache__"]

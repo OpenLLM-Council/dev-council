@@ -184,13 +184,17 @@ def maybe_compact(state, config: dict) -> bool:
     """
     model = config.get("model", "")
     limit = get_context_limit(model)
-    threshold = limit * 0.7
+    threshold = limit * 0.8
+    before = estimate_tokens(state.messages)
 
-    if estimate_tokens(state.messages) <= threshold:
+    if before <= threshold:
         return False
 
     # Layer 1: snip old tool results
     snip_old_tool_results(state.messages)
+    callback = config.get("_auto_compact_notice")
+    if callable(callback):
+        callback(int((before / limit) * 100) if limit else 0)
 
     if estimate_tokens(state.messages) <= threshold:
         return True

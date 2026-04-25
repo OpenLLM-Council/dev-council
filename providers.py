@@ -134,6 +134,31 @@ def messages_to_ollama(messages: list) -> list[dict]:
     return result
 
 
+def messages_to_ollama_plain(messages: list) -> list[dict]:
+    result = []
+    for message in messages:
+        role = message["role"]
+        if role == "user":
+            item = {"role": "user", "content": message.get("content", "")}
+            if message.get("images"):
+                item["images"] = message["images"]
+            result.append(item)
+            continue
+        if role == "assistant":
+            content = message.get("content", "") or ""
+            tool_calls = message.get("tool_calls", [])
+            if tool_calls:
+                names = ", ".join(tc.get("name", "") for tc in tool_calls)
+                content = f"{content}\n\n[Tool calls requested: {names}]".strip()
+            result.append({"role": "assistant", "content": content})
+            continue
+        if role == "tool":
+            name = message.get("name", "tool")
+            content = message.get("content", "")
+            result.append({"role": "user", "content": f"[Tool result from {name}]\n{content}"})
+    return result
+
+
 def stream_ollama(
     provider_name: str,
     model: str,
@@ -177,8 +202,13 @@ def stream_ollama(
     try:
         response_cm = urllib.request.urlopen(request, timeout=300)
     except urllib.error.HTTPError as exc:
-        if exc.code == 500 and "tools" in payload:
+        has_tool_protocol = "tools" in payload or any(
+            message.get("role") == "tool" or message.get("tool_calls")
+            for message in messages
+        )
+        if exc.code in {400, 500} and has_tool_protocol:
             payload.pop("tools", None)
+            payload["messages"] = [{"role": "system", "content": system}] + messages_to_ollama_plain(messages)
             request = urllib.request.Request(
                 f"{base_url}/api/chat",
                 data=json.dumps(payload).encode("utf-8"),

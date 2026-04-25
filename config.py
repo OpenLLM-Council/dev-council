@@ -46,6 +46,9 @@ DEFAULTS = {
     "ollama_cloud_base_url": "",
     "ollama_cloud_api_key": "",
     "active_ollama_endpoint": "local",
+    "llm_mode": "single",
+    "active_model": "local/qwen2.5-coder:latest",
+    "consensus_models": [],
 }
 
 

@@ -362,6 +362,16 @@ def maybe_truncate_diff(diff_text, max_lines=80):
     return "\n".join(shown) + f"\n\n[... {remaining} more lines ...]"
 
 
+def _read_text_preserve_newlines(path: Path) -> str:
+    with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        return handle.read()
+
+
+def _write_text_preserve_newlines(path: Path, content: str) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(content)
+
+
 # ── Tool implementations ───────────────────────────────────────────────────
 
 def _read(file_path: str, limit: int = None, offset: int = None) -> str:
@@ -372,7 +382,7 @@ def _read(file_path: str, limit: int = None, offset: int = None) -> str:
         return f"Error: {file_path} is a directory"
     try:
         # Explicitly use utf-8 and newline="" to avoid encoding/line-ending mismatches
-        lines = p.read_text(encoding="utf-8", errors="replace", newline="").splitlines(keepends=True)
+        lines = _read_text_preserve_newlines(p).splitlines(keepends=True)
         start = offset or 0
         chunk = lines[start:start + limit] if limit else lines[start:]
         if not chunk:
@@ -388,10 +398,10 @@ def _write(file_path: str, content: str) -> str:
     try:
         is_new = not p.exists()
         # Ensure utf-8 and newline="" for reading existing content to generate diff
-        old_content = "" if is_new else p.read_text(encoding="utf-8", errors="replace", newline="")
+        old_content = "" if is_new else _read_text_preserve_newlines(p)
         p.parent.mkdir(parents=True, exist_ok=True)
         # Always write as utf-8 with newline="" to prevent double CRLF on Windows
-        p.write_text(content, encoding="utf-8", newline="")
+        _write_text_preserve_newlines(p, content)
         if is_new:
             lc = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
             return f"Created {file_path} ({lc} lines)"
@@ -411,7 +421,7 @@ def _edit(file_path: str, old_string: str, new_string: str, replace_all: bool = 
         return f"Error: file not found: {file_path}"
     try:
         # Read with newline="" to get original line endings
-        content = p.read_text(encoding="utf-8", errors="replace", newline="")
+        content = _read_text_preserve_newlines(p)
         
         # Detect original line endings: only treat as pure CRLF if every \n is part of \r\n
         crlf_count = content.count("\r\n")
@@ -443,7 +453,7 @@ def _edit(file_path: str, old_string: str, new_string: str, replace_all: bool = 
             old_content_final = content_norm
                       
         # Write with newline="" to prevent double CRLF translation on Windows
-        p.write_text(final_content, encoding="utf-8", newline="")
+        _write_text_preserve_newlines(p, final_content)
         filename = p.name
         diff = generate_unified_diff(old_content_final, final_content, filename)
         return f"Changes applied to {filename}:\n\n{diff}"
@@ -469,7 +479,7 @@ def _kill_proc_tree(pid: int):
                 pass
 
 
-def _bash(command: str, timeout: int = 30) -> str:
+def _run_shell_command(command: str, timeout: int) -> tuple[int, str]:
     import sys as _sys
     kwargs = dict(
         shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -480,18 +490,60 @@ def _bash(command: str, timeout: int = 30) -> str:
     # (preexec_fn=os.setsid can deadlock when other threads hold locks at fork time).
     if _sys.platform != "win32":
         kwargs["start_new_session"] = True
+    proc = subprocess.Popen(command, **kwargs)
     try:
-        proc = subprocess.Popen(command, **kwargs)
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_proc_tree(proc.pid)
-            proc.wait()
-            return f"Error: timed out after {timeout}s (process killed)"
-        out = stdout
-        if stderr:
-            out += ("\n" if out else "") + "[stderr]\n" + stderr
-        return out.strip() or "(no output)"
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_proc_tree(proc.pid)
+        proc.wait()
+        return 124, f"Error: timed out after {timeout}s (process killed)"
+    out = stdout
+    if stderr:
+        out += ("\n" if out else "") + "[stderr]\n" + stderr
+    return proc.returncode, out.strip() or "(no output)"
+
+
+def _windows_retry_command(command: str) -> str | None:
+    parts = command.strip().split()
+    if not parts:
+        return None
+    name = parts[0].lower()
+    rest = " ".join(parts[1:]).strip()
+    if name == "ls" and not any(part.startswith("-") for part in parts[1:]):
+        return f"dir {rest}".strip()
+    if name == "cat" and rest:
+        return f"type {rest}"
+    if name == "pwd" and not rest:
+        return "cd"
+    return None
+
+
+def _looks_like_windows_command_not_found(result: str) -> bool:
+    lowered = result.lower()
+    return (
+        "is not recognized as an internal or external command" in lowered
+        or "is not recognized as the name of a cmdlet" in lowered
+    )
+
+
+def _bash(command: str, timeout: int = 30) -> str:
+    import sys as _sys
+    try:
+        returncode, output = _run_shell_command(command, timeout)
+        retry = None
+        if _sys.platform == "win32" and returncode != 0 and _looks_like_windows_command_not_found(output):
+            retry = _windows_retry_command(command)
+        if retry:
+            retry_code, retry_output = _run_shell_command(retry, timeout)
+            status = "succeeded" if retry_code == 0 else f"failed with exit code {retry_code}"
+            return (
+                "Windows command retry triggered.\n"
+                f"Original command: {command}\n"
+                f"Windows retry: {retry} ({status})\n\n"
+                f"Original output:\n{output}\n\n"
+                f"Retry output:\n{retry_output}"
+            ).strip()
+        return output
     except Exception as e:
         return f"Error: {e}"
 

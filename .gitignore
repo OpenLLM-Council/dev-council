@@ -9,5 +9,8 @@ reference/
 .dev-council-home/
 .pytest_cache/
 pytest-cache-files-*/
+.test-tmp/
 btp/
 *jsonl
+.agents/
+CLAUDE.md

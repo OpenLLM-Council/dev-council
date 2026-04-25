@@ -92,15 +92,15 @@ def get_project_guidance() -> str:
 
     probe = Path.cwd()
     for _ in range(10):
-        candidate = probe / "GUIDANCE.md"
-        if candidate.exists():
-            try:
-                content_parts.append(
-                    f"[Project GUIDANCE.md: {candidate}]\n{candidate.read_text(encoding='utf-8')}"
-                )
-            except Exception:
-                pass
-            break
+        for filename in ("GUIDANCE.md", "CLAUDE.md"):
+            candidate = probe / filename
+            if candidate.exists():
+                try:
+                    content_parts.append(
+                        f"[Project {filename}: {candidate}]\n{candidate.read_text(encoding='utf-8')}"
+                    )
+                except Exception:
+                    pass
         if probe.parent == probe:
             break
         probe = probe.parent
@@ -110,15 +110,34 @@ def get_project_guidance() -> str:
     return "\n# Guidance\n" + "\n\n".join(content_parts) + "\n"
 
 
+def get_skill_metadata() -> str:
+    try:
+        from skill.loader import load_skills
+    except Exception:
+        return ""
+    lines = []
+    for skill in load_skills():
+        triggers = ", ".join(skill.triggers)
+        description = skill.description or skill.when_to_use
+        lines.append(f"- {skill.name} [{triggers}]: {description}".strip())
+    if not lines:
+        return ""
+    return "\n# Available Skill Metadata\n" + "\n".join(lines[:50]) + "\n"
+
+
 def get_platform_hints() -> str:
     if platform.system() != "Windows":
         return ""
     return (
         "\n## Windows Shell Hints\n"
+        "- Prefer Read, Glob, and Grep tools for project files before using Bash\n"
+        "- Bash commands run through Windows cmd.exe in this app\n"
         "- Use `type` instead of `cat`\n"
+        "- Use `dir` or `Get-ChildItem` instead of `ls`\n"
         "- Use `Get-ChildItem -Recurse` instead of `find`\n"
         "- Use `Select-String` or `rg` instead of `grep`\n"
         "- Use `copy`, `move`, and `del` for basic file operations\n"
+        "- If a Unix-style command fails, retry once with the Windows equivalent before answering\n"
     )
 
 
@@ -135,6 +154,10 @@ def build_system_prompt(config: dict | None = None) -> str:
     memory_context = get_memory_context()
     if memory_context:
         prompt += f"\n\n# Memory\n{memory_context}\n"
+
+    skill_metadata = get_skill_metadata()
+    if skill_metadata:
+        prompt += skill_metadata
 
     if config and config.get("permission_mode") == "plan":
         plan_file = config.get("_plan_file", "")

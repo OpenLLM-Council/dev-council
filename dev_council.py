@@ -7,18 +7,15 @@ import atexit
 import io
 import json
 import os
+import re
 import shlex
+import subprocess
 import sys
 import textwrap
 import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-
-# Force UTF-8 for Windows terminals to avoid UnicodeEncodeError
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import checkpoint as ckpt
 from agent import (
@@ -113,6 +110,20 @@ _scheduled_queries: list[str] = []
 _scheduled_lock = threading.Lock()
 _active_state: AgentState | None = None
 _active_config: dict | None = None
+
+
+def _ensure_utf8_stdio() -> None:
+    """Wrap Windows stdio only during CLI execution, not at import time."""
+    if sys.platform != "win32":
+        return
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        buffer = getattr(stream, "buffer", None)
+        if buffer is None:
+            continue
+        if str(getattr(stream, "encoding", "") or "").lower() == "utf-8":
+            continue
+        setattr(sys, name, io.TextIOWrapper(buffer, encoding="utf-8", errors="replace"))
 
 
 def _enqueue_system_query(query: str) -> None:
@@ -256,18 +267,58 @@ def _print_tool_result(result: str, config: dict) -> None:
     print(textwrap.indent(preview, "    "))
 
 
+def _context_usage(state: AgentState, config: dict) -> tuple[int, int, int]:
+    used = estimate_tokens(state.messages)
+    limit = get_context_limit(config.get("model", DEFAULTS["model"]))
+    percent = min(999, int((used / limit) * 100)) if limit else 0
+    return used, limit, percent
+
+
+def _context_footer(state: AgentState, config: dict) -> str:
+    used, limit, percent = _context_usage(state, config)
+    return f"[Context: {percent}% used | ~{used:,} / {limit:,} tokens]"
+
+
+def _print_context_footer(state: AgentState, config: dict) -> None:
+    print(clr(_context_footer(state, config), "dim"))
+
+
+def _auto_compaction_notice(percent: int) -> None:
+    print(clr(f"⚠️ Context compaction triggered automatically (usage: {percent}%)", "yellow"))
+
+
+def _print_banner() -> None:
+    banner = r"""
+     ____  _______     __       ____ ___  _   _ _   _  ____ ___ _
+    |  _ \| ____\ \   / /      / ___/ _ \| | | | \ | |/ ___|_ _| |
+    | | | |  _|  \ \ / /_____ | |  | | | | | | |  \| | |    | || |
+    | |_| | |___  \ V /|_____| | |__| |_| | |_| | |\  | |___ | || |___
+    |____/|_____|  \_/          \____\___/ \___/|_| \_|\____|___|_____|
+"""
+    print(clr(banner.rstrip(), "cyan", "bold"))
+    print(clr(f"dev-council {VERSION}", "cyan", "bold"))
+    print(clr("BTP stages: SRS -> Tech Stack -> Code -> QA -> Deployment", "dim"))
+    print(clr("Use /model to choose Single LLM or Consensus mode. Press Ctrl+C to exit.", "dim"))
+
+
+def _exit_on_interrupt() -> None:
+    print()
+    ok("Exiting dev-council.")
+
+
 def _run_agent_query(
     query: str,
     state: AgentState,
     config: dict,
     model_override: str = "",
     quiet: bool = False,
-    use_skills: bool = True,
+    use_skills: bool = False,
 ) -> str:
     effective_config = dict(config)
     if model_override:
         effective_config["model"] = model_override
     effective_config["_run_query_callback"] = _enqueue_system_query
+    effective_config["_auto_compact_notice"] = _auto_compaction_notice
     if use_skills:
         query, _ = _apply_skill_context(query, announce=not quiet, force_coding=True)
     system_prompt = build_system_prompt(effective_config)
@@ -339,6 +390,37 @@ def _run_text_prompt(
         if hasattr(event, "text"):
             text_parts.append(event.text)
     return "".join(text_parts).strip()
+
+
+def _run_generation_prompt(prompt: str, config: dict, system: str = "") -> str:
+    if config.get("llm_mode") != "consensus":
+        return _run_text_prompt(prompt, config, system=system)
+
+    selected_models = list(config.get("consensus_models") or [])
+    if not selected_models:
+        warn("Consensus mode has no models selected; falling back to active single model.")
+        return _run_text_prompt(prompt, config, system=system)
+
+    proposals: list[tuple[str, str]] = []
+    for index, model_name in enumerate(selected_models, 1):
+        info(f"Consensus prompt {index}/{len(selected_models)}: {model_name}")
+        proposal = _run_text_prompt(prompt, config, model=model_name, system=system)
+        proposals.append((model_name, proposal))
+
+    if len(proposals) == 1:
+        return proposals[0][1]
+
+    synthesis_prompt = ["Synthesize these model responses into one final output."]
+    synthesis_prompt.append(f"Original prompt:\n{prompt}\n")
+    for model_name, proposal in proposals:
+        synthesis_prompt.append(f"[{model_name}]\n{proposal}\n")
+    synthesis_prompt.append("Return only the final synthesized answer.")
+    return _run_text_prompt(
+        "\n".join(synthesis_prompt),
+        config,
+        model=selected_models[0],
+        system="You are a consensus editor. Produce the final answer only.",
+    )
 
 
 def _project_snapshot(limit: int = 200) -> str:
@@ -479,12 +561,20 @@ def _project_is_effectively_empty() -> bool:
 
 def _looks_like_large_product_request(query: str) -> bool:
     lowered = query.lower()
-    build_terms = ("build", "create", "make", "generate", "develop", "launch")
+    words = re.findall(r"\b[\w-]+\b", lowered)
+    build_terms = (
+        "build",
+        "create",
+        "develop",
+        "make a full",
+        "implement a system",
+    )
     product_terms = (
         "saas",
         "full stack",
         "fullstack",
         "full-stack",
+        "full system",
         "dashboard",
         "platform",
         "portal",
@@ -494,8 +584,57 @@ def _looks_like_large_product_request(query: str) -> bool:
         "admin panel",
         "web app",
         "application",
+        "product",
+        "system",
+        "feature set",
     )
-    return any(term in lowered for term in build_terms) and any(term in lowered for term in product_terms)
+    has_build_term = any(term in lowered for term in build_terms)
+    has_product_term = any(term in lowered for term in product_terms)
+    return (has_build_term and has_product_term) or (len(words) > 30 and has_product_term)
+
+
+def _should_apply_skill_context(query: str) -> bool:
+    lowered = query.lower().strip()
+    if not lowered:
+        return False
+
+    informational_starts = (
+        "read ",
+        "show ",
+        "tell ",
+        "explain ",
+        "summarize ",
+        "what ",
+        "why ",
+        "how ",
+        "list ",
+        "find ",
+        "search ",
+        "inspect ",
+        "review ",
+    )
+    mutation_terms = (
+        "add",
+        "build",
+        "change",
+        "code",
+        "create",
+        "debug",
+        "develop",
+        "edit",
+        "fix",
+        "implement",
+        "refactor",
+        "remove",
+        "repair",
+        "test",
+        "update",
+        "write",
+    )
+
+    if lowered.startswith(informational_starts) and not any(term in lowered for term in mutation_terms):
+        return False
+    return any(term in lowered for term in mutation_terms)
 
 
 _STAGE_SPECS = {
@@ -520,11 +659,17 @@ _STAGE_SPECS = {
     },
     "techstack": {
         "file": "tech_stack.md",
-        "title": "Technology Stack Recommendation",
+        "title": "Technology Stack Options",
         "prompt": (
-            "Recommend the best technology stack for this project context.\n\n"
+            "Generate exactly 2 or 3 distinct technology stack options for this project context.\n\n"
             "{context}\n\n"
-            "Cover application layers, libraries, database, testing, CI/CD, hosting, and tradeoffs."
+            "Use this exact structure for each option:\n"
+            "Option N - <name>\n"
+            "Frontend: <frontend>\n"
+            "Backend: <backend>\n"
+            "DB: <database>\n"
+            "Deploy: <deployment target>\n"
+            "Why: <one-line rationale>\n"
         ),
     },
     "qa": {
@@ -564,10 +709,105 @@ def _run_stage(stage_name: str, user_text: str, config: dict) -> Path:
     context = _stage_context(user_text)
     prompt = spec["prompt"].format(context=context or user_text)
     system = f"You are dev-council working on BTP stage output: {spec['title']}."
-    result = _run_text_prompt(prompt, config, system=system)
+    result = _run_generation_prompt(prompt, config, system=system)
     path = _write_stage_file(stage_name, result)
     ok(f"Wrote {path}")
     return path
+
+
+def _parse_tech_stack_options(text: str) -> list[dict[str, str]]:
+    chunks = re.split(r"(?im)^\s*Option\s+\d+\s*(?:[-—:])\s*", text)
+    options: list[dict[str, str]] = []
+    for chunk in chunks[1:]:
+        lines = [line.strip() for line in chunk.strip().splitlines() if line.strip()]
+        if not lines:
+            continue
+        option = {"name": lines[0].strip("* ")}
+        for line in lines[1:]:
+            key, sep, value = line.partition(":")
+            if not sep:
+                continue
+            normalized = key.strip().lower()
+            if normalized in {"frontend", "backend", "db", "database", "deploy", "deployment", "why"}:
+                if normalized == "database":
+                    normalized = "db"
+                if normalized == "deployment":
+                    normalized = "deploy"
+                option[normalized] = value.strip()
+        required = {"name", "frontend", "backend", "db", "deploy", "why"}
+        if required <= set(option):
+            options.append(option)
+    return options[:3]
+
+
+def _format_tech_stack_option(index: int, option: dict[str, str]) -> str:
+    return "\n".join(
+        [
+            f"Option {index} - {option['name']}",
+            f"Frontend: {option['frontend']}",
+            f"Backend: {option['backend']}",
+            f"DB: {option['db']}",
+            f"Deploy: {option['deploy']}",
+            f"Why: {option['why']}",
+        ]
+    )
+
+
+def _run_tech_stack_selection(user_text: str, config: dict) -> Path:
+    spec = _STAGE_SPECS["techstack"]
+    context = _stage_context(user_text)
+    prompt = spec["prompt"].format(context=context or user_text)
+    result = _run_generation_prompt(
+        prompt,
+        config,
+        system="You are dev-council preparing concise stack options for a user decision.",
+    )
+    options = _parse_tech_stack_options(result)
+    if not (2 <= len(options) <= 3):
+        warn("The model did not return 2-3 parseable stack options; using safe default options for selection.")
+        options = [
+            {
+                "name": "FastAPI + React",
+                "frontend": "React + Vite + Tailwind",
+                "backend": "Python + FastAPI",
+                "db": "PostgreSQL",
+                "deploy": "Docker + Railway",
+                "why": "Fast to build, easy to test, and suitable for most full-stack apps.",
+            },
+            {
+                "name": "Next.js Full Stack",
+                "frontend": "Next.js + Tailwind",
+                "backend": "Next.js API routes/server actions",
+                "db": "PostgreSQL",
+                "deploy": "Vercel + managed Postgres",
+                "why": "Best fit when frontend velocity and simple deployment matter most.",
+            },
+            {
+                "name": "MERN Stack",
+                "frontend": "React + Tailwind",
+                "backend": "Node.js + Express",
+                "db": "MongoDB",
+                "deploy": "Docker + Railway",
+                "why": "Flexible JavaScript stack for rapid product prototyping.",
+            },
+        ]
+
+    print()
+    info("Choose a technology stack before coding:")
+    for index, option in enumerate(options, 1):
+        print(_format_tech_stack_option(index, option))
+        print()
+
+    while True:
+        raw = ask_input_interactive("Select tech stack option number: ", config).strip()
+        if raw.isdigit():
+            index = int(raw) - 1
+            if 0 <= index < len(options):
+                selected = _format_tech_stack_option(index + 1, options[index])
+                path = _write_stage_file("techstack", selected)
+                ok(f"Selected {options[index]['name']} -> {path}")
+                return path
+        err(f"Choose a number between 1 and {len(options)}.")
 
 
 def _select_endpoint(config: dict, purpose: str) -> str:
@@ -593,11 +833,39 @@ def _select_endpoint(config: dict, purpose: str) -> str:
 
 
 def _fetch_models_for_endpoint(endpoint: str, config: dict) -> list[str]:
+    if endpoint == "local":
+        models = _fetch_local_models_from_ollama_list()
+        if models:
+            return models
     base_url = get_base_url(endpoint, config)
     api_key = get_api_key(endpoint, config)
     models = list_ollama_models(base_url, api_key=api_key)
     if not models:
         raise RuntimeError(f"No models found at {base_url}/api/tags")
+    return models
+
+
+def _fetch_local_models_from_ollama_list() -> list[str]:
+    try:
+        completed = subprocess.run(
+            ["ollama", "list"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except Exception:
+        return []
+    if completed.returncode != 0:
+        return []
+    models: list[str] = []
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if not parts or parts[0].lower() == "name":
+            continue
+        models.append(parts[0])
     return models
 
 
@@ -617,6 +885,8 @@ def _choose_single_model(config: dict, endpoint_hint: str = "") -> str:
             if 0 <= index < len(models):
                 selected = f"{endpoint}/{models[index]}"
                 config["model"] = selected
+                config["active_model"] = selected
+                config["llm_mode"] = "single"
                 config["active_ollama_endpoint"] = endpoint
                 save_config(config)
                 ok(f"Model set to {selected}")
@@ -634,11 +904,11 @@ def _choose_multiple_models(config: dict) -> list[str]:
         print(f"  [{idx:2d}] {model_name}")
 
     while True:
-        raw_count = ask_input_interactive("How many models should join the council? ", config).strip()
-        if raw_count.isdigit() and 2 <= int(raw_count) <= len(models):
+        raw_count = ask_input_interactive("How many models should vote? ", config).strip()
+        if raw_count.isdigit() and 1 <= int(raw_count) <= len(models):
             count = int(raw_count)
             break
-        err(f"Choose a number between 2 and {len(models)}.")
+        err(f"Choose a number between 1 and {len(models)}.")
 
     while True:
         raw = ask_input_interactive(
@@ -656,7 +926,36 @@ def _choose_multiple_models(config: dict) -> list[str]:
         if len(unique_indexes) != count or any(index < 0 or index >= len(models) for index in unique_indexes):
             err("Invalid council selection.")
             continue
-        return [f"{endpoint}/{models[index]}" for index in unique_indexes]
+        selected = [f"{endpoint}/{models[index]}" for index in unique_indexes]
+        config["llm_mode"] = "consensus"
+        config["consensus_models"] = selected
+        config["model"] = selected[0]
+        config["active_ollama_endpoint"] = endpoint
+        save_config(config)
+        ok(f"Consensus models set: {', '.join(selected)}")
+        return selected
+
+
+def _select_model_mode(config: dict) -> str:
+    print()
+    info("Do you want to use a Single LLM or Consensus mode?")
+    print("  [1] Single LLM")
+    print("  [2] Consensus")
+    while True:
+        raw = ask_input_interactive("Select mode number: ", config).strip().lower()
+        if raw in {"1", "single", "single llm"}:
+            return "single"
+        if raw in {"2", "consensus"}:
+            return "consensus"
+        err("Choose 1 for Single LLM or 2 for Consensus.")
+
+
+def _run_model_selection_flow(config: dict) -> None:
+    mode = _select_model_mode(config)
+    if mode == "single":
+        _choose_single_model(config)
+        return
+    _choose_multiple_models(config)
 
 
 def _run_council(task_text: str, state: AgentState, config: dict) -> None:
@@ -743,11 +1042,50 @@ def _run_council(task_text: str, state: AgentState, config: dict) -> None:
     _run_agent_query(implementation_prompt, state, config, model_override=synthesis_model)
 
 
+def _run_consensus_agent_query(task_text: str, state: AgentState, config: dict) -> None:
+    selected_models = list(config.get("consensus_models") or [])
+    if len(selected_models) <= 1:
+        model = selected_models[0] if selected_models else ""
+        _run_agent_query(task_text, state, config, model_override=model, use_skills=True)
+        return
+
+    proposals: list[tuple[str, str]] = []
+    for index, model_name in enumerate(selected_models, 1):
+        info(f"Collecting implementation proposal {index}/{len(selected_models)} from {model_name}")
+        proposal = _run_text_prompt(
+            task_text,
+            config,
+            model=model_name,
+            system="You are one model in a coding consensus. Propose the implementation approach.",
+            use_skills=True,
+        )
+        proposals.append((model_name, proposal))
+
+    synthesis_prompt = ["Synthesize these implementation proposals into one executable brief."]
+    synthesis_prompt.append(f"Original task:\n{task_text}\n")
+    for model_name, proposal in proposals:
+        synthesis_prompt.append(f"[{model_name}]\n{proposal}\n")
+    synthesis_prompt.append("Return concise implementation instructions with agreed changes, risks, and tests.")
+    consensus = _run_text_prompt(
+        "\n".join(synthesis_prompt),
+        config,
+        model=selected_models[0],
+        system="You are a consensus editor for implementation planning.",
+        use_skills=True,
+    )
+    _run_agent_query(
+        f"{task_text}\n\nConsensus implementation brief:\n{consensus}",
+        state,
+        config,
+        model_override=selected_models[0],
+        use_skills=True,
+    )
+
+
 def _run_full_btp_cycle(query: str, state: AgentState, config: dict) -> None:
-    info("Running full BTP cycle: SRS -> Milestones -> Tech Stack -> Code -> QA -> Deployment")
+    info("Running full BTP cycle: SRS -> Tech Stack -> Code -> QA -> Deployment")
     _run_stage("srs", query, config)
-    _run_stage("milestones", _stage_context(query), config)
-    _run_stage("techstack", _stage_context(query), config)
+    _run_tech_stack_selection(_stage_context(query), config)
 
     implementation_prompt = textwrap.dedent(
         f"""
@@ -766,47 +1104,39 @@ def _run_full_btp_cycle(query: str, state: AgentState, config: dict) -> None:
         - Use `--yes` or `-y` whenever the tooling supports it.
         """
     ).strip()
-    _run_agent_query(implementation_prompt, state, config, use_skills=True)
+    if config.get("llm_mode") == "consensus":
+        _run_consensus_agent_query(implementation_prompt, state, config)
+    else:
+        _run_agent_query(implementation_prompt, state, config, use_skills=True)
     _run_stage("qa", _stage_context(query), config)
     _run_stage("deploy", _stage_context(query), config)
 
 
 def cmd_help(_args: str, _state: AgentState, _config: dict) -> bool:
     help_text = """
-Commands:
-  /help               Show this help message
-  /clear              Clear conversation history
-  /model [model]      Set active model or choose from list
-  /config [k[=v]]     View or update configuration
-  /configure [k=v]    Configure LLM related parameters
-  /save               Save current session
-  /load <path>        Load session from JSON file
-  /resume             Resume latest session
-  /history            Show conversation history
-  /context            Show token usage and limit
-  /cost               Show estimated session cost
-  /verbose            Toggle verbose mode
-  /thinking           Toggle thinking process display
-  /permissions [m]    Set permission mode (auto, manual, accept-all, plan)
-  /cwd [path]         View or change current working directory
-  /skills             List available skills
-  /memory [query]     Search or list memories
-  /mcp [sub]          Manage MCP servers (reload, add, remove)
-  /tasks [sub]        Manage tasks (create, get, start, done, etc.)
-  /council [task]     Run multi-model council consensus
-  /srs [req]          Generate Software Requirements Specification
-  /milestones [ctx]   Generate project milestones
-  /techstack [ctx]    Generate tech stack recommendation
-  /qa [ctx]           Generate QA strategy and report
-  /deploy [ctx]       Generate deployment plan
-  /pipeline [req]     Run full BTP planning pipeline
-  /checkpoint [id]    Manage session checkpoints
-  /rewind [id]        Alias for /checkpoint
-  /plan [text|done]   Manage planning mode
-  /compact [focus]    Manually compact conversation context
-  /status             Show current status (model, tokens, etc.)
-  /doctor             Run system health check
-  /exit               Exit the CLI
+/model
+  Switch between Single LLM and Consensus mode. Single mode stores active_model;
+  Consensus mode stores consensus_models and uses them for pipeline generation.
+
+/compact
+  Manually trigger context compaction and replace the active conversation context.
+
+/skills
+  List available agent skills loaded from disk and built-ins.
+
+MCP Tools
+  Connected MCP servers expose callable tools named mcp__<server>__<tool>.
+  Use /mcp to list server status and /mcp reload to refresh configured servers.
+
+Memory
+  Agent memory stores stable facts and can be searched with /memory.
+
+Context
+  Each response prints current context usage as a footer.
+
+Pipeline
+  Big product requests run SRS -> Tech Stack selection -> Code -> QA -> Deployment.
+  Simple requests bypass the pipeline and run directly.
 """
     print(help_text.strip())
     return True
@@ -824,7 +1154,7 @@ def cmd_clear(_args: str, state: AgentState, _config: dict) -> bool:
 def cmd_model(args: str, _state: AgentState, config: dict) -> bool:
     raw = args.strip()
     if not raw:
-        _choose_single_model(config)
+        _run_model_selection_flow(config)
         return True
     if raw in {"local", "cloud"}:
         _choose_single_model(config, endpoint_hint=raw)
@@ -832,6 +1162,8 @@ def cmd_model(args: str, _state: AgentState, config: dict) -> bool:
     if "/" not in raw:
         raw = f"{config.get('active_ollama_endpoint', 'local')}/{raw}"
     config["model"] = raw
+    config["active_model"] = raw
+    config["llm_mode"] = "single"
     config["active_ollama_endpoint"] = detect_provider(raw)
     save_config(config)
     ok(f"Model set to {raw}")
@@ -968,9 +1300,8 @@ def cmd_history(_args: str, state: AgentState, _config: dict) -> bool:
 
 
 def cmd_context(_args: str, state: AgentState, config: dict) -> bool:
-    used = estimate_tokens(state.messages)
-    limit = get_context_limit(config["model"])
-    info(f"Context estimate: ~{used} / {limit} tokens")
+    used, limit, percent = _context_usage(state, config)
+    info(f"Context estimate: {percent}% used | ~{used:,} / {limit:,} tokens")
     return True
 
 
@@ -1070,6 +1401,9 @@ def cmd_mcp(args: str, _state: AgentState, _config: dict) -> bool:
             client = live.get(name)
             status = client.state.value if client else "disconnected"
             print(f"- {name}: {status} ({cfg.transport.value})")
+            if client and client.state.value == "connected":
+                for tool in client._tools:
+                    print(f"  - {tool.qualified_name}: {tool.description}")
         return True
 
     subcmd = parts[0]
@@ -1188,7 +1522,7 @@ def cmd_techstack(args: str, _state: AgentState, config: dict) -> bool:
     if not user_text:
         user_text = ask_input_interactive("Tech stack context: ", config).strip()
     if user_text:
-        _run_stage("techstack", user_text, config)
+        _run_tech_stack_selection(user_text, config)
         if _active_state is not None:
             _record_snapshot(_active_state, config, f"/techstack {user_text[:80]}")
     return True
@@ -1216,18 +1550,14 @@ def cmd_deploy(args: str, _state: AgentState, config: dict) -> bool:
     return True
 
 
-def cmd_pipeline(args: str, _state: AgentState, config: dict) -> bool:
+def cmd_pipeline(args: str, state: AgentState, config: dict) -> bool:
     request = args.strip() or ask_input_interactive("Pipeline request: ", config).strip()
     if not request:
         return True
-    _run_stage("srs", request, config)
-    _run_stage("milestones", _stage_context(request), config)
-    _run_stage("techstack", _stage_context(request), config)
-    _run_stage("qa", _stage_context(request), config)
-    _run_stage("deploy", _stage_context(request), config)
-    if _active_state is not None:
-        _record_snapshot(_active_state, config, f"/pipeline {request[:80]}")
-    ok("BTP planning pipeline complete. Use /council to run consensus coding.")
+    _run_model_selection_flow(config)
+    _run_full_btp_cycle(request, state, config)
+    _record_snapshot(state, config, f"/pipeline {request[:80]}")
+    ok("BTP pipeline complete.")
     return True
 
 
@@ -1317,6 +1647,9 @@ def cmd_compact(args: str, state: AgentState, config: dict) -> bool:
 
 def cmd_status(_args: str, state: AgentState, config: dict) -> bool:
     print(f"Model: {config['model']}")
+    print(f"LLM mode: {config.get('llm_mode', 'single')}")
+    if config.get("llm_mode") == "consensus":
+        print(f"Consensus models: {', '.join(config.get('consensus_models') or [])}")
     print(f"Endpoint: {current_provider(config)}")
     print(f"CWD: {Path.cwd()}")
     print(f"Messages: {len(state.messages)}")
@@ -1426,31 +1759,34 @@ def _process_input(user_input: str, state: AgentState, config: dict) -> bool:
     if not user_input.strip():
         return True
     if user_input.startswith("/"):
-        return handle_slash(user_input, state, config)
+        keep_running = handle_slash(user_input, state, config)
+        if keep_running:
+            _print_context_footer(state, config)
+        return keep_running
 
-    if _project_is_effectively_empty() and _looks_like_large_product_request(user_input):
-        raw = ask_input_interactive(
-            "This looks like a larger product request in an empty folder. Run the full BTP cycle first? [Y/n]: ",
-            config,
-        ).strip().lower()
-        if raw in {"", "y", "yes"}:
-            _run_full_btp_cycle(user_input, state, config)
-            _record_snapshot(state, config, f"[full-cycle] {user_input}")
-            return True
+    if _looks_like_large_product_request(user_input):
+        _run_model_selection_flow(config)
+        _run_full_btp_cycle(user_input, state, config)
+        _record_snapshot(state, config, f"[full-cycle] {user_input}")
+        _print_context_footer(state, config)
+        return True
 
-    _run_agent_query(user_input, state, config)
+    _run_agent_query(user_input, state, config, use_skills=_should_apply_skill_context(user_input))
     _record_snapshot(state, config, user_input)
+    _print_context_footer(state, config)
     return True
 
 
 def _run_scheduled_turns(state: AgentState, config: dict) -> None:
     for query in _drain_scheduled_queries():
         info("[scheduled] running queued system event")
-        _run_agent_query(query, state, config)
+        _run_agent_query(query, state, config, use_skills=_should_apply_skill_context(query))
         _record_snapshot(state, config, query)
+        _print_context_footer(state, config)
 
 
 def main() -> int:
+    _ensure_utf8_stdio()
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("prompt", nargs="*")
     parser.add_argument("-p", "--print", dest="print_mode", action="store_true")
@@ -1485,25 +1821,31 @@ def main() -> int:
 
     prompt_text = " ".join(args.prompt).strip()
     if args.print_mode and prompt_text:
-        _run_agent_query(prompt_text, state, config)
-        _record_snapshot(state, config, prompt_text)
+        try:
+            _run_agent_query(prompt_text, state, config, use_skills=_should_apply_skill_context(prompt_text))
+            _record_snapshot(state, config, prompt_text)
+            _print_context_footer(state, config)
+        except KeyboardInterrupt:
+            _exit_on_interrupt()
         return 0
 
-    print(clr(f"dev-council {VERSION}", "cyan", "bold"))
-    print(clr("BTP stages: SRS -> Milestones -> Tech Stack -> Council Coding -> QA -> Deployment", "dim"))
-    print(clr("Use /model to choose a single model or /council for multi-model consensus.", "dim"))
+    _print_banner()
 
     if prompt_text:
-        _process_input(prompt_text, state, config)
+        try:
+            _process_input(prompt_text, state, config)
+        except KeyboardInterrupt:
+            _exit_on_interrupt()
+            return 0
 
     while True:
-        _run_scheduled_turns(state, config)
         try:
+            _run_scheduled_turns(state, config)
             user_input = ask_input_interactive(_make_prompt_prefix(config), config)
+            keep_running = _process_input(user_input, state, config)
         except (KeyboardInterrupt, EOFError):
-            print()
+            _exit_on_interrupt()
             break
-        keep_running = _process_input(user_input, state, config)
         if not keep_running:
             break
 
