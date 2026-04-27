@@ -7,7 +7,7 @@ This document outlines the strategy and instructions for benchmarking `dev-counc
 To evaluate the system for a research paper, we focus on three dimensions:
 
 - **Autonomous Coding**: Ability to solve complex tasks and use tools correctly.
-- **BTP Pipeline Efficiency**: Quality of SRS, Milestones, and Tech Stack plans.
+- **SDLC Pipeline Efficiency**: Quality of SRS, Milestones, and Tech Stack plans.
 - **Council Consensus**: Accuracy gain from multi-model collaboration.
 
 ## 2. BigCodeBench (BCB)
@@ -59,9 +59,9 @@ Measure the effectiveness of the `/council` command.
 
 ---
 
-## 5. Requirements & Planning (BTP)
+## 5. Requirements & Planning (SDLC)
 
-Evaluate the quality of the generated BTP artifacts (`btp/srs.md`, etc.).
+Evaluate the quality of the generated SDLC artifacts (`SDLC/srs.md`, etc.).
 
 **Methodology:**
 
@@ -120,7 +120,7 @@ When evaluating the `/council` consensus mechanism, it is important to measure n
 | **Consensus Accuracy**        | HumanEval / BigCodeBench       |
 | **Multi-file Navigation**     | RepoBench / SWE-bench          |
 | **Refactoring (`Edit` tool)** | Aider Benchmark                |
-| **BTP SRS/Milestones**        | ArchBench (and Custom Rubrics) |
+| **SDLC SRS/Milestones**        | ArchBench (and Custom Rubrics) |
 
 1. pip install bigcodebench
 2. bigcodebench.sanitize --samples samples.jsonl --calibrate

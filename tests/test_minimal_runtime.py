@@ -18,7 +18,7 @@ def test_provider_detection_is_ollama_only():
     assert bare_model("cloud/llama3.3") == "llama3.3"
 
 
-def test_builtin_skills_match_btp_flow():
+def test_builtin_skills_match_SDLC_flow():
     names = {skill.name for skill in load_skills()}
     assert {
         "srs",

@@ -1,6 +1,6 @@
 # dev-council
 
-`dev-council` is a terminal coding agent for a BTP-style workflow:
+`dev-council` is a terminal coding agent for a SDLC-style workflow:
 
 ```text
 SRS -> Tech Stack Selection -> Code -> QA -> Deployment
@@ -11,7 +11,7 @@ It is built around Ollama-compatible models, automatic skill loading, MCP tools,
 ## What It Does
 
 - Routes simple requests directly to the coding agent.
-- Routes larger product requirements through the full BTP pipeline.
+- Routes larger product requirements through the full SDLC pipeline.
 - Prompts for Single LLM or Consensus mode before big pipeline runs.
 - Uses live local Ollama model discovery through `ollama list`.
 - Pauses at the Tech Stack stage and waits for the user to pick one of 2-3 options.
@@ -85,12 +85,12 @@ Additional internal/developer commands still exist for compatibility, but `/help
 
 For big requirements, the pipeline runs:
 
-1. SRS generation into `btp/srs.md`
+1. SRS generation into `SDLC/srs.md`
 2. Tech stack option generation
 3. User selection of exactly one stack
 4. Code implementation
-5. QA report into `btp/qa_report.md`
-6. Deployment plan into `btp/deployment_plan.md`
+5. QA report into `SDLC/qa_report.md`
+6. Deployment plan into `SDLC/deployment_plan.md`
 
 The Tech Stack stage displays 2-3 options with:
 
@@ -107,7 +107,7 @@ The agent does not continue to Code until a stack option is selected.
 
 Skills are discovered from:
 
-- built-in BTP/coding skills
+- built-in SDLC/coding skills
 - `.agents/skills/*/SKILL.md`
 - `.codex/skills/*/SKILL.md`
 - `.dev-council/skills/*.md`
@@ -283,7 +283,7 @@ compaction.py       manual and automatic context compaction
 context.py          system prompt builder
 tools.py            built-in file, shell, web, memory, task, and plan tools
 mcp/                MCP client and tool registration
-skill/              skill loading and built-in BTP skills
+skill/              skill loading and built-in SDLC skills
 memory/             persistent memory system
 task/               task storage and helpers
 checkpoint/         file checkpoints and rewind support

@@ -65,7 +65,7 @@ print("5. PIPELINE STAGES OK")
 
 # 6. All essential functions
 for fn in [
-    "_run_full_btp_cycle", "cmd_pipeline", "_run_consensus_agent_query",
+    "_run_full_SDLC_cycle", "cmd_pipeline", "_run_consensus_agent_query",
     "_run_generation_prompt", "_run_model_selection_flow", "_save_pipeline_state",
     "_load_pipeline_state", "_clear_pipeline_state", "_run_agent_query",
     "_run_text_prompt", "_run_council", "_choose_multiple_models",

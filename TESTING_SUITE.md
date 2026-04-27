@@ -173,12 +173,12 @@ Expected:
 - Tech Stack options are displayed as a numbered list
 - the CLI waits for your stack selection
 - after selection, Code, QA, and Deployment stages continue
-- generated files appear under `btp/`
+- generated files appear under `SDLC/`
 
 Check files:
 
 ```powershell
-Get-ChildItem btp
+Get-ChildItem SDLC
 ```
 
 Expected key files:
@@ -200,8 +200,8 @@ Expected:
 
 - the same model selection flow runs
 - Tech Stack pauses for selection
-- pipeline artifacts are written to `btp/`
-- final status says the BTP pipeline is complete
+- pipeline artifacts are written to `SDLC/`
+- final status says the SDLC pipeline is complete
 
 ## 9. Tech Stack Selection
 
@@ -226,7 +226,7 @@ Expected behavior:
 
 - exactly 2-3 stack options are displayed
 - the CLI asks for an option number
-- `btp/tech_stack.md` contains only the selected option
+- `SDLC/tech_stack.md` contains only the selected option
 
 ## 10. Context Commands
 
@@ -261,7 +261,7 @@ Inside the CLI:
 
 Expected:
 
-- built-in BTP/coding skills are listed
+- built-in SDLC/coding skills are listed
 - project skills from `.agents/skills/*/SKILL.md` are listed, including:
   - `code-reviewer`
   - `context-engineering`

@@ -10,7 +10,7 @@ reference/
 .pytest_cache/
 pytest-cache-files-*/
 .test-tmp/
-btp/
+SDLC/
 *jsonl
 .agents/
 CLAUDE.md

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dev-council"
-version = "2.1.0"
-description = "Minimal BTP coding CLI with Ollama local/cloud support"
+version = "2.6.0"
+description = "Minimal SDLC coding CLI with Ollama local/cloud support"
 readme = "README.md"
 requires-python = ">=3.11, <3.13"
 license = { text = "MIT" }

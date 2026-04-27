@@ -30,7 +30,7 @@ def test_simple_request_bypasses_pipeline(monkeypatch):
     called = {"direct": False, "pipeline": False, "model": False}
 
     monkeypatch.setattr(dev_council, "_run_agent_query", lambda *a, **k: called.__setitem__("direct", True))
-    monkeypatch.setattr(dev_council, "_run_full_btp_cycle", lambda *a, **k: called.__setitem__("pipeline", True))
+    monkeypatch.setattr(dev_council, "_run_full_SDLC_cycle", lambda *a, **k: called.__setitem__("pipeline", True))
     monkeypatch.setattr(dev_council, "_run_model_selection_flow", lambda *a, **k: called.__setitem__("model", True))
     monkeypatch.setattr(dev_council, "_record_snapshot", lambda *a, **k: None)
     monkeypatch.setattr(dev_council, "_print_context_footer", lambda *a, **k: None)
@@ -43,7 +43,7 @@ def test_big_request_runs_model_selection_and_pipeline(monkeypatch):
     called = {"direct": False, "pipeline": False, "model": False}
 
     monkeypatch.setattr(dev_council, "_run_agent_query", lambda *a, **k: called.__setitem__("direct", True))
-    monkeypatch.setattr(dev_council, "_run_full_btp_cycle", lambda *a, **k: called.__setitem__("pipeline", True))
+    monkeypatch.setattr(dev_council, "_run_full_SDLC_cycle", lambda *a, **k: called.__setitem__("pipeline", True))
     monkeypatch.setattr(dev_council, "_run_model_selection_flow", lambda *a, **k: called.__setitem__("model", True))
     monkeypatch.setattr(dev_council, "_record_snapshot", lambda *a, **k: None)
     monkeypatch.setattr(dev_council, "_print_context_footer", lambda *a, **k: None)

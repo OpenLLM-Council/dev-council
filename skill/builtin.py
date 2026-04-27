@@ -1,4 +1,4 @@
-"""Built-in BTP skills for dev-council."""
+"""Built-in SDLC skills for dev-council."""
 from __future__ import annotations
 
 from .loader import SkillDef, register_builtin_skill
@@ -18,7 +18,7 @@ def _register_builtins() -> None:
                 "constraints, assumptions, risks, success criteria, and open questions."
             ),
             file_path="<builtin>",
-            when_to_use="Use for BTP stage 2 when requirements need to be formalized.",
+            when_to_use="Use for SDLC stage 2 when requirements need to be formalized.",
             argument_hint="<request>",
             arguments=["request"],
             user_invocable=True,
@@ -39,7 +39,7 @@ def _register_builtins() -> None:
                 "Define milestone names, deliverables, dependencies, sequencing, and acceptance checks."
             ),
             file_path="<builtin>",
-            when_to_use="Use for BTP stage 3 after the SRS is available.",
+            when_to_use="Use for SDLC stage 3 after the SRS is available.",
             argument_hint="<srs-or-request>",
             arguments=["context"],
             user_invocable=True,
@@ -61,7 +61,7 @@ def _register_builtins() -> None:
                 "Explain tradeoffs and end with a recommended stack."
             ),
             file_path="<builtin>",
-            when_to_use="Use for BTP stage 4 to lock the implementation stack.",
+            when_to_use="Use for SDLC stage 4 to lock the implementation stack.",
             argument_hint="<srs-and-milestones>",
             arguments=["context"],
             user_invocable=True,
@@ -83,7 +83,7 @@ def _register_builtins() -> None:
                 "security risks, gaps, and recommended fixes."
             ),
             file_path="<builtin>",
-            when_to_use="Use for BTP stage 6 after or during implementation review.",
+            when_to_use="Use for SDLC stage 6 after or during implementation review.",
             argument_hint="<implementation-context>",
             arguments=["context"],
             user_invocable=True,
@@ -105,7 +105,7 @@ def _register_builtins() -> None:
                 "monitoring, and production-readiness checks."
             ),
             file_path="<builtin>",
-            when_to_use="Use for BTP stage 7 to prepare production delivery.",
+            when_to_use="Use for SDLC stage 7 to prepare production delivery.",
             argument_hint="<project-context>",
             arguments=["context"],
             user_invocable=True,
@@ -116,15 +116,15 @@ def _register_builtins() -> None:
     register_builtin_skill(
         SkillDef(
             name="pipeline",
-            description="Summarize the full BTP workflow for a request",
+            description="Summarize the full SDLC workflow for a request",
             triggers=["/pipeline"],
             tools=[],
             prompt=(
-                "For the following request, outline the full BTP workflow across SRS, milestones, "
+                "For the following request, outline the full SDLC workflow across SRS, milestones, "
                 "tech stack, coding, QA, and deployment:\n\n$ARGUMENTS"
             ),
             file_path="<builtin>",
-            when_to_use="Use to frame an end-to-end BTP execution plan.",
+            when_to_use="Use to frame an end-to-end SDLC execution plan.",
             argument_hint="<request>",
             arguments=["request"],
             user_invocable=True,

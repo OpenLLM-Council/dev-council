@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dev-council: a minimal BTP coding CLI powered by Ollama."""
+"""dev-council: a minimal SDLC coding CLI powered by Ollama."""
 from __future__ import annotations
 
 import argparse
@@ -71,7 +71,7 @@ from task import (
 from tools import ask_input_interactive
 
 
-VERSION = "2.1.0"
+VERSION = "2.6.0"
 
 C = {
     "cyan": "\033[36m",
@@ -138,14 +138,14 @@ def _drain_scheduled_queries() -> list[str]:
     return pending
 
 
-def _btp_dir() -> Path:
-    path = Path.cwd() / "btp"
+def _SDLC_dir() -> Path:
+    path = Path.cwd() / "SDLC"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _council_dir() -> Path:
-    path = _btp_dir() / "council"
+    path = _SDLC_dir() / "council"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -297,7 +297,7 @@ def _print_banner() -> None:
 """
     print(clr(banner.rstrip(), "cyan", "bold"))
     print(clr(f"dev-council {VERSION}", "cyan", "bold"))
-    print(clr("BTP stages: SRS -> Tech Stack -> Code -> QA -> Deployment", "dim"))
+    print(clr("SDLC stages: SRS -> Tech Stack -> Code -> QA -> Deployment", "dim"))
     print(clr("Use /model to choose Single LLM or Consensus mode. Press Ctrl+C to exit.", "dim"))
 
 
@@ -462,9 +462,9 @@ def _project_snapshot(limit: int = 200) -> str:
 
 def _stage_context(extra: str = "") -> str:
     sections = []
-    btp = _btp_dir()
+    SDLC = _SDLC_dir()
     for name in ["srs.md", "milestones.md", "tech_stack.md", "qa_report.md", "deployment_plan.md"]:
-        path = btp / name
+        path = SDLC / name
         if path.exists():
             sections.append(f"[{name}]\n{path.read_text(encoding='utf-8')[:8000]}")
     if extra:
@@ -574,7 +574,7 @@ def _apply_skill_context(query: str, announce: bool = True, force_coding: bool =
 
 
 def _project_is_effectively_empty() -> bool:
-    ignored = {"btp", "__pycache__", "node_modules", ".git"}
+    ignored = {"SDLC", "__pycache__", "node_modules", ".git"}
     for child in Path.cwd().iterdir():
         if child.name.startswith("."):
             continue
@@ -717,7 +717,7 @@ _STAGE_SPECS = {
 
 def _write_stage_file(stage_name: str, content: str) -> Path:
     spec = _STAGE_SPECS[stage_name]
-    path = _btp_dir() / spec["file"]
+    path = _SDLC_dir() / spec["file"]
     if _active_config and _active_config.get("_session_id"):
         ckpt.track_file_edit(_active_config["_session_id"], str(path))
     path.write_text(content.strip() + "\n", encoding="utf-8")
@@ -764,7 +764,7 @@ def _run_stage(stage_name: str, user_text: str, config: dict) -> Path:
             else:
                 prompt = base_prompt
                 
-            system = f"You are dev-council working on BTP stage output: {spec['title']}."
+            system = f"You are dev-council working on SDLC stage output: {spec['title']}."
             result = _run_generation_prompt(prompt, config, system=system)
             
             print("\n" + clr("--- Generated Output ---", "cyan"))
@@ -968,7 +968,7 @@ def _run_council(task_text: str, state: AgentState, config: dict) -> None:
             Project file snapshot:
             {snapshot}
 
-            Existing BTP context:
+            Existing SDLC context:
             {_stage_context()}
 
             Produce a concise implementation proposal with these sections:
@@ -1021,7 +1021,7 @@ def _run_council(task_text: str, state: AgentState, config: dict) -> None:
         {consensus}
 
         Work inside the current repository only.
-        Keep the runtime aligned with dev-council and the BTP workflow.
+        Keep the runtime aligned with dev-council and the SDLC workflow.
         """
     ).strip()
     info(f"Implementing with synthesis model {synthesis_model}")
@@ -1120,7 +1120,7 @@ def _run_consensus_agent_query(task_text: str, state: AgentState, config: dict) 
 
 # ── Pipeline checkpoint system ───────────────────────────────────────────────
 
-_PIPELINE_STATE_FILE = "btp/.pipeline_state.json"
+_PIPELINE_STATE_FILE = "SDLC/.pipeline_state.json"
 
 # Ordered list of pipeline stages — "code" is the implementation step
 _PIPELINE_STAGES = ["srs", "techstack", "code", "qa", "deploy"]
@@ -1167,13 +1167,13 @@ def _clear_pipeline_state() -> None:
         path.unlink()
 
 
-def _run_full_btp_cycle(
+def _run_full_SDLC_cycle(
     query: str,
     state: AgentState,
     config: dict,
     resume_from: list[str] | None = None,
 ) -> None:
-    """Run the full BTP pipeline with per-stage checkpointing.
+    """Run the full SDLC pipeline with per-stage checkpointing.
 
     If *resume_from* is given it is the list of already-completed stage names
     and those stages will be skipped.
@@ -1182,10 +1182,10 @@ def _run_full_btp_cycle(
 
     if completed:
         remaining = [s for s in _PIPELINE_STAGES if s not in completed]
-        info(f"Resuming BTP pipeline from stage: {remaining[0] if remaining else 'done'}")
+        info(f"Resuming SDLC pipeline from stage: {remaining[0] if remaining else 'done'}")
         info(f"  Already completed: {', '.join(completed)}")
     else:
-        info("Running full BTP cycle: SRS -> Tech Stack -> Code -> QA -> Deployment")
+        info("Running full SDLC cycle: SRS -> Tech Stack -> Code -> QA -> Deployment")
 
     # ── Stage: SRS ──────────────────────────────────────────────────────
     if "srs" not in completed:
@@ -1224,7 +1224,7 @@ def _run_full_btp_cycle(
             User request:
             {query}
 
-            BTP planning context:
+            SDLC planning context:
             {_stage_context(query)}
 
             CRITICAL INSTRUCTIONS — you MUST follow these:
@@ -1280,7 +1280,7 @@ def _run_full_btp_cycle(
 
     # All stages done — clean up the checkpoint file
     _clear_pipeline_state()
-    ok("All BTP pipeline stages completed successfully.")
+    ok("All SDLC pipeline stages completed successfully.")
 
 
 def cmd_help(_args: str, _state: AgentState, _config: dict) -> bool:
@@ -1770,7 +1770,7 @@ def cmd_pipeline(args: str, state: AgentState, config: dict) -> bool:
         if saved.get("judge_model"):
             config["judge_model"] = saved["judge_model"]
         info(f"Resuming pipeline for: {query[:100]}")
-        _run_full_btp_cycle(query, state, config, resume_from=completed)
+        _run_full_SDLC_cycle(query, state, config, resume_from=completed)
         _record_snapshot(state, config, f"/pipeline resume {query[:60]}")
         return True
 
@@ -1802,7 +1802,7 @@ def cmd_pipeline(args: str, state: AgentState, config: dict) -> bool:
                     config["consensus_models"] = saved["consensus_models"]
                 if saved.get("judge_model"):
                     config["judge_model"] = saved["judge_model"]
-                _run_full_btp_cycle(saved["query"], state, config, resume_from=completed)
+                _run_full_SDLC_cycle(saved["query"], state, config, resume_from=completed)
                 _record_snapshot(state, config, f"/pipeline resume {saved['query'][:60]}")
                 return True
             elif choice in {"n", "new"}:
@@ -1812,7 +1812,7 @@ def cmd_pipeline(args: str, state: AgentState, config: dict) -> bool:
                 return True
 
     _run_model_selection_flow(config)
-    _run_full_btp_cycle(request, state, config)
+    _run_full_SDLC_cycle(request, state, config)
     _record_snapshot(state, config, f"/pipeline {request[:80]}")
     return True
 
@@ -2022,7 +2022,7 @@ def _process_input(user_input: str, state: AgentState, config: dict) -> bool:
 
     if _looks_like_large_product_request(user_input):
         _run_model_selection_flow(config)
-        _run_full_btp_cycle(user_input, state, config)
+        _run_full_SDLC_cycle(user_input, state, config)
         _record_snapshot(state, config, f"[full-cycle] {user_input}")
         _print_context_footer(state, config)
         return True

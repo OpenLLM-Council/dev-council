@@ -59,8 +59,8 @@ class TestPipelineCheckpoint:
     def test_clear_no_error_when_no_checkpoint(self):
         _clear_pipeline_state()  # should not raise
 
-    def test_save_creates_btp_dir(self):
-        """Even if btp/ doesn't exist, save should create it."""
+    def test_save_creates_SDLC_dir(self):
+        """Even if SDLC/ doesn't exist, save should create it."""
         sub = _TEST_DIR / "fresh_sub"
         sub.mkdir()
         old_cwd = os.getcwd()
