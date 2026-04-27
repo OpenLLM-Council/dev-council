@@ -73,11 +73,11 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Print verbose output")
     args = parser.parse_args()
 
-    print(f"Loading BigCodeBench dataset (split: v0.1.3)...")
+    print(f"Loading BigCodeBench dataset (split: v2.1.0)...")
     try:
-        # BigCodeBench uses version numbers as split names (v0.1.0_hf, v0.1.3, v0.1.3, etc.)
+        # BigCodeBench uses version numbers as split names (v0.1.0_hf, v2.1.0, v2.1.0, etc.)
         # 'instruct' and 'complete' are prompt types within the same dataset rows.
-        ds = load_dataset("bigcode/bigcodebench", split="v0.1.3")
+        ds = load_dataset("bigcode/bigcodebench", split="v2.1.0")
     except Exception as e:
         print(f"Error loading dataset: {e}")
         return

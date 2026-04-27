@@ -71,7 +71,7 @@ from task import (
 from tools import ask_input_interactive
 
 
-VERSION = "0.1.3"
+VERSION = "2.1.0"
 
 C = {
     "cyan": "\033[36m",
@@ -401,6 +401,9 @@ def _run_generation_prompt(prompt: str, config: dict, system: str = "") -> str:
         warn("Consensus mode has no models selected; falling back to active single model.")
         return _run_text_prompt(prompt, config, system=system)
 
+    council_root = _council_dir() / datetime.now().strftime("%Y%m%d_%H%M%S")
+    council_root.mkdir(parents=True, exist_ok=True)
+
     proposals: list[tuple[str, str]] = []
     failures: list[tuple[str, str]] = []
     for index, model_name in enumerate(selected_models, 1):
@@ -408,6 +411,8 @@ def _run_generation_prompt(prompt: str, config: dict, system: str = "") -> str:
         try:
             proposal = _run_text_prompt(prompt, config, model=model_name, system=system)
             proposals.append((model_name, proposal))
+            proposal_path = council_root / f"proposal_{index}_{bare_model(model_name).replace(':', '_')}.md"
+            proposal_path.write_text(proposal + "\n", encoding="utf-8")
         except Exception as exc:
             failures.append((model_name, str(exc)))
             warn(f"Consensus model failed: {model_name} -> {exc}")
@@ -429,12 +434,18 @@ def _run_generation_prompt(prompt: str, config: dict, system: str = "") -> str:
     # Use the judge model for synthesis if configured, otherwise first successful proposer
     judge = config.get("judge_model") or proposals[0][0]
     info(f"Synthesizing consensus with {judge}")
-    return _run_text_prompt(
+    synthesis_result = _run_text_prompt(
         "\n".join(synthesis_prompt),
         config,
         model=judge,
         system="You are a consensus editor. Produce the final answer only.",
     )
+    
+    consensus_path = council_root / "consensus.md"
+    consensus_path.write_text(synthesis_result + "\n", encoding="utf-8")
+    ok(f"Consensus output saved to {council_root}")
+    
+    return synthesis_result
 
 
 def _project_snapshot(limit: int = 200) -> str:
@@ -673,18 +684,12 @@ _STAGE_SPECS = {
     },
     "techstack": {
         "file": "tech_stack.md",
-        "title": "Technology Stack Options",
+        "title": "Technology Stack",
         "prompt": (
-            "Generate exactly 2 or 3 distinct technology stack options for this project context.\n\n"
+            "Generate a recommended technology stack for this project context.\n\n"
             "{context}\n\n"
-            "CRITICAL: Ensure strict internal consistency! The technologies listed in the Frontend, Backend, and DB fields MUST exactly match what is implied by the Option Name.\n\n"
-            "Use this exact structure for each option:\n"
-            "Option N - <name>\n"
-            "Frontend: <frontend>\n"
-            "Backend: <backend>\n"
-            "DB: <database>\n"
-            "Deploy: <deployment target>\n"
-            "Why: <one-line rationale>\n"
+            "Include details for the Frontend, Backend, Database, and Deployment strategy, and "
+            "provide a brief rationale for these choices."
         ),
     },
     "qa": {
@@ -722,107 +727,63 @@ def _write_stage_file(stage_name: str, content: str) -> Path:
 def _run_stage(stage_name: str, user_text: str, config: dict) -> Path:
     spec = _STAGE_SPECS[stage_name]
     context = _stage_context(user_text)
-    prompt = spec["prompt"].format(context=context or user_text)
-    system = f"You are dev-council working on BTP stage output: {spec['title']}."
-    result = _run_generation_prompt(prompt, config, system=system)
-    path = _write_stage_file(stage_name, result)
-    ok(f"Wrote {path}")
-    return path
+    
+    use_consensus = False
+    raw_consensus = ask_input_interactive(clr(f"Do you want consensus for {spec['title']}? [y/N] ", "yellow"), config).strip().lower()
+    if raw_consensus in {"y", "yes"}:
+        use_consensus = True
 
+    original_llm_mode = config.get("llm_mode")
+    original_model = config.get("model")
+    
+    if use_consensus:
+        config["llm_mode"] = "consensus"
+    else:
+        config["llm_mode"] = "single"
+        selected_models = config.get("consensus_models", [])
+        if len(selected_models) > 1:
+            print()
+            info(f"Available models for {spec['title']}:")
+            for idx, m in enumerate(selected_models, 1):
+                print(f"  [{idx}] {m}")
+            while True:
+                raw_idx = ask_input_interactive("Select model number: ", config).strip()
+                if raw_idx.isdigit() and 1 <= int(raw_idx) <= len(selected_models):
+                    config["model"] = selected_models[int(raw_idx) - 1]
+                    break
+                err("Invalid selection.")
+        elif len(selected_models) == 1:
+            config["model"] = selected_models[0]
+            
+    try:
+        feedback_context = ""
+        while True:
+            base_prompt = spec["prompt"].format(context=context or user_text)
+            if feedback_context:
+                prompt = base_prompt + "\n\nUser feedback on previous iteration:\n" + feedback_context + "\n\nPlease revise the output incorporating this feedback."
+            else:
+                prompt = base_prompt
+                
+            system = f"You are dev-council working on BTP stage output: {spec['title']}."
+            result = _run_generation_prompt(prompt, config, system=system)
+            
+            print("\n" + clr("--- Generated Output ---", "cyan"))
+            print(result)
+            print(clr("------------------------", "cyan") + "\n")
+            
+            approval = ask_input_interactive(clr("Do you approve this or not? [Press Enter to approve, or type changes to be done]: ", "yellow"), config).strip()
+            if not approval:
+                break
+            feedback_context = approval
 
-def _parse_tech_stack_options(text: str) -> list[dict[str, str]]:
-    chunks = re.split(r"(?im)^\s*Option\s+\d+\s*(?:[-—:])\s*", text)
-    options: list[dict[str, str]] = []
-    for chunk in chunks[1:]:
-        lines = [line.strip() for line in chunk.strip().splitlines() if line.strip()]
-        if not lines:
-            continue
-        option = {"name": lines[0].strip("* ")}
-        for line in lines[1:]:
-            key, sep, value = line.partition(":")
-            if not sep:
-                continue
-            normalized = key.strip().lower()
-            if normalized in {"frontend", "backend", "db", "database", "deploy", "deployment", "why"}:
-                if normalized == "database":
-                    normalized = "db"
-                if normalized == "deployment":
-                    normalized = "deploy"
-                option[normalized] = value.strip()
-        required = {"name", "frontend", "backend", "db", "deploy", "why"}
-        if required <= set(option):
-            options.append(option)
-    return options[:3]
-
-
-def _format_tech_stack_option(index: int, option: dict[str, str]) -> str:
-    return "\n".join(
-        [
-            f"Option {index} - {option['name']}",
-            f"Frontend: {option['frontend']}",
-            f"Backend: {option['backend']}",
-            f"DB: {option['db']}",
-            f"Deploy: {option['deploy']}",
-            f"Why: {option['why']}",
-        ]
-    )
-
-
-def _run_tech_stack_selection(user_text: str, config: dict) -> Path:
-    spec = _STAGE_SPECS["techstack"]
-    context = _stage_context(user_text)
-    prompt = spec["prompt"].format(context=context or user_text)
-    result = _run_generation_prompt(
-        prompt,
-        config,
-        system="You are dev-council preparing concise stack options for a user decision.",
-    )
-    options = _parse_tech_stack_options(result)
-    if not (2 <= len(options) <= 3):
-        warn("The model did not return 2-3 parseable stack options; using safe default options for selection.")
-        options = [
-            {
-                "name": "FastAPI + React",
-                "frontend": "React + Vite + Tailwind",
-                "backend": "Python + FastAPI",
-                "db": "PostgreSQL",
-                "deploy": "Docker + Railway",
-                "why": "Fast to build, easy to test, and suitable for most full-stack apps.",
-            },
-            {
-                "name": "Next.js Full Stack",
-                "frontend": "Next.js + Tailwind",
-                "backend": "Next.js API routes/server actions",
-                "db": "PostgreSQL",
-                "deploy": "Vercel + managed Postgres",
-                "why": "Best fit when frontend velocity and simple deployment matter most.",
-            },
-            {
-                "name": "MERN Stack",
-                "frontend": "React + Tailwind",
-                "backend": "Node.js + Express",
-                "db": "MongoDB",
-                "deploy": "Docker + Railway",
-                "why": "Flexible JavaScript stack for rapid product prototyping.",
-            },
-        ]
-
-    print()
-    info("Choose a technology stack before coding:")
-    for index, option in enumerate(options, 1):
-        print(_format_tech_stack_option(index, option))
-        print()
-
-    while True:
-        raw = ask_input_interactive("Select tech stack option number: ", config).strip()
-        if raw.isdigit():
-            index = int(raw) - 1
-            if 0 <= index < len(options):
-                selected = _format_tech_stack_option(index + 1, options[index])
-                path = _write_stage_file("techstack", selected)
-                ok(f"Selected {options[index]['name']} -> {path}")
-                return path
-        err(f"Choose a number between 1 and {len(options)}.")
+        path = _write_stage_file(stage_name, result)
+        ok(f"Wrote {path}")
+        return path
+    finally:
+        if original_llm_mode is not None:
+            config["llm_mode"] = original_llm_mode
+        if original_model is not None:
+            config["model"] = original_model
 
 
 def _select_endpoint(config: dict, purpose: str) -> str:
@@ -951,25 +912,8 @@ def _choose_multiple_models(config: dict) -> list[str]:
         return selected
 
 
-def _select_model_mode(config: dict) -> str:
-    print()
-    info("Do you want to use a Single LLM or Consensus mode?")
-    print("  [1] Single LLM")
-    print("  [2] Consensus")
-    while True:
-        raw = ask_input_interactive("Select mode number: ", config).strip().lower()
-        if raw in {"1", "single", "single llm"}:
-            return "single"
-        if raw in {"2", "consensus"}:
-            return "consensus"
-        err("Choose 1 for Single LLM or 2 for Consensus.")
-
-
 def _run_model_selection_flow(config: dict) -> None:
-    mode = _select_model_mode(config)
-    if mode == "single":
-        _choose_single_model(config)
-        return
+    info("Pipeline requires model selection for consensus coding.")
     selected = _choose_multiple_models(config)
 
     # Ask if the user wants a separate judge/synthesis model
@@ -1091,6 +1035,9 @@ def _run_consensus_agent_query(task_text: str, state: AgentState, config: dict) 
         _run_agent_query(task_text, state, config, model_override=model, use_skills=True)
         return
 
+    council_root = _council_dir() / datetime.now().strftime("%Y%m%d_%H%M%S")
+    council_root.mkdir(parents=True, exist_ok=True)
+
     proposals: list[tuple[str, str]] = []
     failures: list[tuple[str, str]] = []
     for index, model_name in enumerate(selected_models, 1):
@@ -1100,10 +1047,12 @@ def _run_consensus_agent_query(task_text: str, state: AgentState, config: dict) 
                 task_text,
                 config,
                 model=model_name,
-                system="You are one model in a coding consensus. Propose the implementation approach.",
+                system="You are one model in a coding consensus. Propose the implementation approach and plan only. Do not write the final code.",
                 use_skills=True,
             )
             proposals.append((model_name, proposal))
+            proposal_path = council_root / f"proposal_{index}_{bare_model(model_name).replace(':', '_')}.md"
+            proposal_path.write_text(proposal + "\n", encoding="utf-8")
         except Exception as exc:
             failures.append((model_name, str(exc)))
             warn(f"Consensus model failed: {model_name} -> {exc}")
@@ -1117,6 +1066,8 @@ def _run_consensus_agent_query(task_text: str, state: AgentState, config: dict) 
     for model_name, proposal in proposals:
         synthesis_prompt.append(f"[{model_name}]\n{proposal}\n")
     synthesis_prompt.append("Return concise implementation instructions with agreed changes, risks, and tests.")
+    synthesis_prompt.append("\nAt the very end of your response, output a line recommending the exact model name from the options that provided the best plan and should do the final coding. Format it exactly like this: 'RECOMMENDED_MODEL: <model_name>'")
+    
     # Use judge model for synthesis and implementation, or fall back to first successful proposer
     judge = config.get("judge_model") or proposals[0][0]
     info(f"Synthesizing implementation consensus with {judge}")
@@ -1127,12 +1078,42 @@ def _run_consensus_agent_query(task_text: str, state: AgentState, config: dict) 
         system="You are a consensus editor for implementation planning.",
         use_skills=True,
     )
-    info(f"Starting implementation with {judge}")
+    
+    consensus_path = council_root / "consensus.md"
+    consensus_path.write_text(consensus + "\n", encoding="utf-8")
+    ok(f"Coding consensus saved to {council_root}")
+    
+    recommended_model = None
+    for line in consensus.splitlines():
+        if "RECOMMENDED_MODEL:" in line:
+            recommended_model = line.split("RECOMMENDED_MODEL:")[1].strip()
+            
+    if not recommended_model or recommended_model not in selected_models:
+        recommended_model = selected_models[0]
+        
+    print()
+    info(f"Judge recommends {recommended_model} for coding.")
+    choice = ask_input_interactive("Do you want to go with this model for coding? [Y/n] ", config).strip().lower()
+    
+    chosen_model = recommended_model
+    if choice in {"n", "no"}:
+        print()
+        info("Available models for coding:")
+        for idx, m in enumerate(selected_models, 1):
+            print(f"  [{idx}] {m}")
+        while True:
+            raw_idx = ask_input_interactive("Select model number: ", config).strip()
+            if raw_idx.isdigit() and 1 <= int(raw_idx) <= len(selected_models):
+                chosen_model = selected_models[int(raw_idx) - 1]
+                break
+            err("Invalid selection.")
+    
+    info(f"Starting implementation with {chosen_model}")
     _run_agent_query(
         f"{task_text}\n\nConsensus implementation brief:\n{consensus}",
         state,
         config,
-        model_override=judge,
+        model_override=chosen_model,
         use_skills=True,
     )
 
@@ -1221,9 +1202,13 @@ def _run_full_btp_cycle(
     # ── Stage: Tech Stack ───────────────────────────────────────────────
     if "techstack" not in completed:
         try:
-            _run_tech_stack_selection(_stage_context(query), config)
+            _run_stage("techstack", query, config)
             completed.append("techstack")
             _save_pipeline_state(query, completed, config)
+            
+            # Re-read active context dynamically if user approved the tech stack
+            # so the next stage has the updated context
+            
         except Exception as exc:
             _save_pipeline_state(query, completed, config)
             err(f"Tech Stack stage failed: {exc}")
@@ -1343,21 +1328,15 @@ def cmd_clear(_args: str, state: AgentState, _config: dict) -> bool:
 
 
 def cmd_model(args: str, _state: AgentState, config: dict) -> bool:
-    raw = args.strip()
-    if not raw:
-        _run_model_selection_flow(config)
-        return True
-    if raw in {"local", "cloud"}:
-        _choose_single_model(config, endpoint_hint=raw)
-        return True
-    if "/" not in raw:
-        raw = f"{config.get('active_ollama_endpoint', 'local')}/{raw}"
-    config["model"] = raw
-    config["active_model"] = raw
-    config["llm_mode"] = "single"
-    config["active_ollama_endpoint"] = detect_provider(raw)
-    save_config(config)
-    ok(f"Model set to {raw}")
+    endpoint = config.get("active_ollama_endpoint", "local")
+    try:
+        models = _fetch_models_for_endpoint(endpoint, config)
+        print()
+        info(f"Available models on {endpoint}:")
+        for idx, model_name in enumerate(models, 1):
+            print(f"  [{idx:2d}] {model_name}")
+    except Exception as exc:
+        err(f"Failed to fetch models: {exc}")
     return True
 
 
@@ -1713,7 +1692,7 @@ def cmd_techstack(args: str, _state: AgentState, config: dict) -> bool:
     if not user_text:
         user_text = ask_input_interactive("Tech stack context: ", config).strip()
     if user_text:
-        _run_tech_stack_selection(user_text, config)
+        _run_stage("techstack", user_text, config)
         if _active_state is not None:
             _record_snapshot(_active_state, config, f"/techstack {user_text[:80]}")
     return True
