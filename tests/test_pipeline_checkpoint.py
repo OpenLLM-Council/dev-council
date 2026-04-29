@@ -12,6 +12,7 @@ import pytest
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import dev_council
 from dev_council import (
     _save_pipeline_state,
     _load_pipeline_state,
@@ -19,6 +20,7 @@ from dev_council import (
     _pipeline_state_path,
     _PIPELINE_STAGES,
 )
+from task import clear_all_tasks, create_task, list_tasks, reload_from_disk
 
 # Use a workspace-local temp dir to avoid Windows permission errors with tmp_path
 _TEST_DIR = Path(__file__).resolve().parent.parent / ".test-tmp" / "pipeline-ckpt"
@@ -90,11 +92,11 @@ class TestPipelineCheckpoint:
 
     def test_pipeline_stages_order(self):
         """Verify the canonical stage ordering."""
-        assert _PIPELINE_STAGES == ["srs", "techstack", "code", "qa", "deploy"]
+        assert _PIPELINE_STAGES == ["srs", "milestones", "techstack", "code", "qa", "deploy"]
 
     def test_remaining_stages_calculation(self):
         """Verify remaining stages are correctly derived."""
-        completed = ["srs", "techstack"]
+        completed = ["srs", "milestones", "techstack"]
         remaining = [s for s in _PIPELINE_STAGES if s not in completed]
         assert remaining == ["code", "qa", "deploy"]
 
@@ -110,3 +112,99 @@ class TestPipelineCheckpoint:
         state = _load_pipeline_state()
         assert state["query"] == "q2"
         assert state["completed_stages"] == ["srs", "techstack"]
+
+    def test_milestone_output_normalizes_task_json(self):
+        content = """
+We need to generate milestone tasks.
+
+```json
+{
+  "tasks": [
+    {
+      "id": "setup",
+      "subject": "Initialize project",
+      "description": "Create the base project structure",
+      "milestone": "Milestone 1",
+      "deliverables": ["Project scaffold"],
+      "acceptance_criteria": ["Repository contains the initial app"],
+      "blocked_by": []
+    },
+    {
+      "id": "auth",
+      "subject": "Add authentication",
+      "description": "Implement login and session handling",
+      "milestone": "Milestone 2",
+      "deliverables": ["Login flow"],
+      "acceptance_criteria": ["Users can sign in"],
+      "blocked_by": ["setup"]
+    }
+  ]
+}
+```
+"""
+        normalized = json.loads(dev_council._sanitize_stage_output("milestones", content))
+        assert [task["id"] for task in normalized["tasks"]] == ["setup", "auth"]
+        assert normalized["tasks"][1]["blocked_by"] == ["setup"]
+        assert normalized["tasks"][0]["blocks"] == ["auth"]
+        assert normalized["tasks"][0]["metadata"]["milestone"] == "Milestone 1"
+
+    def test_markdown_output_strips_model_chatter(self):
+        content = """
+We need to generate the SRS first.
+
+# Software Requirements Specification
+
+## Overview
+
+Test content
+"""
+        cleaned = dev_council._sanitize_stage_output("srs", content)
+        assert cleaned.startswith("# Software Requirements Specification")
+        assert "We need to generate" not in cleaned
+
+    def test_milestone_prompt_renders_json_example_without_format_error(self):
+        template = dev_council._STAGE_SPECS["milestones"]["prompt"]
+        rendered = dev_council._render_stage_prompt(template, "todo app context")
+        assert "todo app context" in rendered
+        assert '"tasks"' in rendered
+
+    def test_task_store_writes_single_sdlc_tasks_file(self):
+        clear_all_tasks()
+        create_task("Task 1", "Description 1")
+        assert (_TEST_DIR / "SDLC" / "tasks.json").exists()
+        assert not (_TEST_DIR / ".dev-council" / "tasks.json").exists()
+
+    def test_task_store_loads_legacy_file_when_canonical_missing(self):
+        clear_all_tasks()
+        canonical_path = _TEST_DIR / "SDLC" / "tasks.json"
+        if canonical_path.exists():
+            canonical_path.unlink()
+        legacy_path = _TEST_DIR / ".dev-council" / "tasks.json"
+        legacy_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_path.write_text(
+            json.dumps(
+                {
+                    "tasks": [
+                        {
+                            "id": "1",
+                            "subject": "Legacy task",
+                            "description": "Loaded from old path",
+                            "status": "pending",
+                            "active_form": "",
+                            "owner": "",
+                            "blocks": [],
+                            "blocked_by": [],
+                            "metadata": {},
+                            "created_at": "2026-01-01T00:00:00",
+                            "updated_at": "2026-01-01T00:00:00",
+                        }
+                    ]
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        reload_from_disk()
+        tasks = list_tasks()
+        assert len(tasks) == 1
+        assert tasks[0].subject == "Legacy task"

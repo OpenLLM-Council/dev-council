@@ -3,7 +3,7 @@
 `dev-council` is a terminal coding agent for a SDLC-style workflow:
 
 ```text
-SRS -> Tech Stack Selection -> Code -> QA -> Deployment
+SRS -> Milestones -> Tech Stack Selection -> Code -> QA -> Deployment
 ```
 
 It is built around Ollama-compatible models, automatic skill loading, MCP tools, memory, checkpoints, and context compaction.
@@ -77,7 +77,7 @@ The final public help surface is intentionally small:
 - `/mcp` — List connected MCP servers and discovered tools.
 - `/memory` — Search or list agent memory.
 - `/context` — Show current context usage.
-- `/pipeline` — Run the full SRS → Tech Stack → Code → QA → Deployment pipeline.
+- `/pipeline` — Run the full SRS → Milestones → Tech Stack → Code → QA → Deployment pipeline.
 
 Additional internal/developer commands still exist for compatibility, but `/help` only documents implemented user-facing features.
 
@@ -86,11 +86,16 @@ Additional internal/developer commands still exist for compatibility, but `/help
 For big requirements, the pipeline runs:
 
 1. SRS generation into `SDLC/srs.md`
-2. Tech stack option generation
-3. User selection of exactly one stack
-4. Code implementation
-5. QA report into `SDLC/qa_report.md`
-6. Deployment plan into `SDLC/deployment_plan.md`
+2. Milestone task generation into `SDLC/tasks.json`
+3. Tech stack option generation
+4. User selection of exactly one stack
+5. Code implementation
+6. QA report into `SDLC/qa_report.md`
+7. Deployment plan into `SDLC/deployment_plan.md`
+
+Stage artifacts are sanitized before they are written. The generator is instructed to return only the final artifact, and common model prefaces or wrappers are stripped so saved files do not include extra prose such as planning chatter or fenced wrappers.
+The milestone stage requests raw JSON for `tasks.json`, and the prompt rendering preserves literal JSON examples without interpreting them as template fields.
+The built-in task system now uses the same `SDLC/tasks.json` file, so milestone tasks are stored once instead of being mirrored to a second file.
 
 The Tech Stack stage displays 2-3 options with:
 

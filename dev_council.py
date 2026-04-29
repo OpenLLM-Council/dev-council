@@ -297,7 +297,7 @@ def _print_banner() -> None:
 """
     print(clr(banner.rstrip(), "cyan", "bold"))
     print(clr(f"dev-council {VERSION}", "cyan", "bold"))
-    print(clr("SDLC stages: SRS -> Tech Stack -> Code -> QA -> Deployment", "dim"))
+    print(clr("SDLC stages: SRS -> Milestones -> Tech Stack -> Code -> QA -> Deployment", "dim"))
     print(clr("Use /model to choose Single LLM or Consensus mode. Press Ctrl+C to exit.", "dim"))
 
 
@@ -448,6 +448,214 @@ def _run_generation_prompt(prompt: str, config: dict, system: str = "") -> str:
     return synthesis_result
 
 
+def _strip_wrapping_code_fence(content: str) -> str:
+    stripped = content.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if len(lines) < 3 or lines[-1].strip() != "```":
+        return stripped
+    return "\n".join(lines[1:-1]).strip()
+
+
+def _sanitize_markdown_stage_output(content: str) -> str:
+    cleaned = _strip_wrapping_code_fence(content)
+    lines = cleaned.splitlines()
+    chatter_prefixes = (
+        "here is",
+        "here's",
+        "below is",
+        "this is",
+        "i have",
+        "i've",
+        "i will",
+        "i'll",
+        "we need to",
+        "we should",
+        "let me",
+        "certainly",
+        "sure",
+        "the following",
+    )
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines:
+        first = lines[0].strip()
+        lowered = first.lower()
+        if any(lowered.startswith(prefix) for prefix in chatter_prefixes):
+            lines.pop(0)
+            while lines and not lines[0].strip():
+                lines.pop(0)
+            continue
+        break
+    return "\n".join(lines).strip()
+
+
+def _extract_json_fragment(content: str) -> str:
+    stripped = content.strip()
+    candidates = [stripped, _strip_wrapping_code_fence(stripped)]
+    fence_matches = re.findall(r"```(?:json)?\s*(.*?)```", content, flags=re.IGNORECASE | re.DOTALL)
+    candidates.extend(match.strip() for match in fence_matches if match.strip())
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            continue
+
+    starts = sorted(
+        {index for token in ("{", "[") for index in [content.find(token)] if index != -1}
+    )
+    for start in starts:
+        opening = content[start]
+        closing = "}" if opening == "{" else "]"
+        depth = 0
+        in_string = False
+        escape = False
+        for end in range(start, len(content)):
+            char = content[end]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                continue
+            if char == opening:
+                depth += 1
+                continue
+            if char == closing:
+                depth -= 1
+                if depth == 0:
+                    candidate = content[start:end + 1].strip()
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except Exception:
+                        break
+    raise ValueError("Model output did not contain valid JSON.")
+
+
+def _listify(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, list):
+        items: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                items.append(text)
+        return items
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _normalize_milestone_tasks(content: str) -> str:
+    payload = json.loads(_extract_json_fragment(content))
+    raw_tasks = payload.get("tasks") if isinstance(payload, dict) else payload
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raise ValueError("Milestone output must include a non-empty tasks list.")
+
+    prepared: list[tuple[str, dict]] = []
+    id_aliases: dict[str, str] = {}
+    used_ids: set[str] = set()
+
+    for index, item in enumerate(raw_tasks, 1):
+        if not isinstance(item, dict):
+            raise ValueError("Each milestone task must be a JSON object.")
+        candidate_id = str(item.get("id") or index).strip() or str(index)
+        task_id = candidate_id
+        while task_id in used_ids:
+            task_id = str(len(used_ids) + 1)
+        used_ids.add(task_id)
+        prepared.append((task_id, item))
+        id_aliases[candidate_id] = task_id
+        id_aliases[task_id] = task_id
+
+    tasks: list[dict] = []
+    now = datetime.now().isoformat()
+    valid_statuses = {"pending", "in_progress", "completed", "cancelled"}
+
+    for task_id, item in prepared:
+        subject = str(
+            item.get("subject")
+            or item.get("title")
+            or item.get("name")
+            or f"Milestone Task {task_id}"
+        ).strip()
+        description = str(item.get("description") or "").strip()
+        status = str(item.get("status") or "pending").strip().lower()
+        dependencies = _listify(
+            item.get("blocked_by")
+            or item.get("depends_on")
+            or item.get("dependencies")
+        )
+        blocked_by = [id_aliases[dep] for dep in dependencies if dep in id_aliases]
+        metadata = dict(item.get("metadata") or {})
+        milestone = str(item.get("milestone") or item.get("phase") or "").strip()
+        deliverables = _listify(item.get("deliverables"))
+        acceptance_criteria = _listify(
+            item.get("acceptance_criteria") or item.get("done_criteria")
+        )
+        if milestone:
+            metadata["milestone"] = milestone
+        if deliverables:
+            metadata["deliverables"] = deliverables
+        if acceptance_criteria:
+            metadata["acceptance_criteria"] = acceptance_criteria
+        if not description:
+            description = "; ".join(deliverables or acceptance_criteria) or subject
+        tasks.append(
+            {
+                "id": task_id,
+                "subject": subject,
+                "description": description,
+                "status": status if status in valid_statuses else "pending",
+                "active_form": str(item.get("active_form") or "").strip(),
+                "owner": str(item.get("owner") or "").strip(),
+                "blocks": [],
+                "blocked_by": blocked_by,
+                "metadata": metadata,
+                "created_at": str(item.get("created_at") or now),
+                "updated_at": str(item.get("updated_at") or now),
+            }
+        )
+
+    tasks_by_id = {task["id"]: task for task in tasks}
+    for task in tasks:
+        for blocker_id in task["blocked_by"]:
+            blocker = tasks_by_id.get(blocker_id)
+            if blocker is not None and task["id"] not in blocker["blocks"]:
+                blocker["blocks"].append(task["id"])
+
+    normalized = {
+        "tasks": tasks,
+        "generated_at": now,
+        "artifact": "milestones",
+    }
+    return json.dumps(normalized, indent=2, ensure_ascii=False)
+
+
+def _sanitize_stage_output(stage_name: str, content: str) -> str:
+    if stage_name == "milestones":
+        return _normalize_milestone_tasks(content)
+    return _sanitize_markdown_stage_output(content)
+
+
+def _render_stage_prompt(template: str, context: str) -> str:
+    return template.replace("{context}", context)
+
+
 def _project_snapshot(limit: int = 200) -> str:
     files: list[str] = []
     for path in sorted(Path.cwd().rglob("*")):
@@ -463,7 +671,7 @@ def _project_snapshot(limit: int = 200) -> str:
 def _stage_context(extra: str = "") -> str:
     sections = []
     SDLC = _SDLC_dir()
-    for name in ["srs.md", "milestones.md", "tech_stack.md", "qa_report.md", "deployment_plan.md"]:
+    for name in ["srs.md", "tasks.json", "tech_stack.md", "qa_report.md", "deployment_plan.md"]:
         path = SDLC / name
         if path.exists():
             sections.append(f"[{name}]\n{path.read_text(encoding='utf-8')[:8000]}")
@@ -670,16 +878,31 @@ _STAGE_SPECS = {
             "Create a Software Requirements Specification for this request.\n\n"
             "{context}\n\n"
             "Include: overview, goals, actors, functional requirements, non-functional "
-            "requirements, assumptions, risks, success criteria, and acceptance criteria."
+            "requirements, assumptions, risks, success criteria, and acceptance criteria.\n\n"
+            "Return only the final Markdown document body with no prefatory text."
         ),
     },
     "milestones": {
-        "file": "milestones.md",
-        "title": "Milestone Plan",
+        "file": "tasks.json",
+        "title": "Milestone Tasks",
         "prompt": (
-            "Create a phased milestone plan for this project context.\n\n"
+            "Create milestone tasks for this project context.\n\n"
             "{context}\n\n"
-            "Define deliverables, dependencies, sequencing, and done criteria for each milestone."
+            "Return JSON only using this shape:\n"
+            "{\n"
+            '  "tasks": [\n'
+            "    {\n"
+            '      "id": "1",\n'
+            '      "subject": "Short task title",\n'
+            '      "description": "What must be completed",\n'
+            '      "blocked_by": [],\n'
+            '      "milestone": "Milestone 1",\n'
+            '      "deliverables": ["deliverable"],\n'
+            '      "acceptance_criteria": ["done criteria"]\n'
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "The tasks must cover milestone sequencing from foundation to delivery. Do not add Markdown, code fences, or explanations."
         ),
     },
     "techstack": {
@@ -689,7 +912,8 @@ _STAGE_SPECS = {
             "Generate a recommended technology stack for this project context.\n\n"
             "{context}\n\n"
             "Include details for the Frontend, Backend, Database, and Deployment strategy, and "
-            "provide a brief rationale for these choices."
+            "provide a brief rationale for these choices.\n\n"
+            "Return only the final Markdown document body with no prefatory text."
         ),
     },
     "qa": {
@@ -699,7 +923,8 @@ _STAGE_SPECS = {
             "Create a QA strategy and assessment for this project context.\n\n"
             "{context}\n\n"
             "Include unit tests, integration tests, end-to-end checks, performance validation, "
-            "security review, gaps, and recommended fixes."
+            "security review, gaps, and recommended fixes.\n\n"
+            "Return only the final Markdown document body with no prefatory text."
         ),
     },
     "deploy": {
@@ -709,7 +934,8 @@ _STAGE_SPECS = {
             "Create a deployment and CI/CD plan for this project context.\n\n"
             "{context}\n\n"
             "Include build pipeline, environments, secrets, release flow, rollback, monitoring, "
-            "and production-readiness gates."
+            "and production-readiness gates.\n\n"
+            "Return only the final Markdown document body with no prefatory text."
         ),
     },
 }
@@ -720,7 +946,8 @@ def _write_stage_file(stage_name: str, content: str) -> Path:
     path = _SDLC_dir() / spec["file"]
     if _active_config and _active_config.get("_session_id"):
         ckpt.track_file_edit(_active_config["_session_id"], str(path))
-    path.write_text(content.strip() + "\n", encoding="utf-8")
+    cleaned = _sanitize_stage_output(stage_name, content)
+    path.write_text(cleaned.strip() + "\n", encoding="utf-8")
     return path
 
 
@@ -758,14 +985,20 @@ def _run_stage(stage_name: str, user_text: str, config: dict) -> Path:
     try:
         feedback_context = ""
         while True:
-            base_prompt = spec["prompt"].format(context=context or user_text)
+            base_prompt = _render_stage_prompt(spec["prompt"], context or user_text)
             if feedback_context:
                 prompt = base_prompt + "\n\nUser feedback on previous iteration:\n" + feedback_context + "\n\nPlease revise the output incorporating this feedback."
             else:
                 prompt = base_prompt
                 
-            system = f"You are dev-council working on SDLC stage output: {spec['title']}."
-            result = _run_generation_prompt(prompt, config, system=system)
+            system = (
+                f"You are dev-council working on SDLC stage output: {spec['title']}. "
+                "Return only the requested artifact. Do not add explanations, prefaces, code fences, or commentary."
+            )
+            result = _sanitize_stage_output(
+                stage_name,
+                _run_generation_prompt(prompt, config, system=system),
+            )
             
             print("\n" + clr("--- Generated Output ---", "cyan"))
             print(result)
@@ -1122,8 +1355,7 @@ def _run_consensus_agent_query(task_text: str, state: AgentState, config: dict) 
 
 _PIPELINE_STATE_FILE = "SDLC/.pipeline_state.json"
 
-# Ordered list of pipeline stages — "code" is the implementation step
-_PIPELINE_STAGES = ["srs", "techstack", "code", "qa", "deploy"]
+_PIPELINE_STAGES = ["srs", "milestones", "techstack", "code", "qa", "deploy"]
 
 
 def _pipeline_state_path() -> Path:
@@ -1185,7 +1417,7 @@ def _run_full_SDLC_cycle(
         info(f"Resuming SDLC pipeline from stage: {remaining[0] if remaining else 'done'}")
         info(f"  Already completed: {', '.join(completed)}")
     else:
-        info("Running full SDLC cycle: SRS -> Tech Stack -> Code -> QA -> Deployment")
+        info("Running full SDLC cycle: SRS -> Milestones -> Tech Stack -> Code -> QA -> Deployment")
 
     # ── Stage: SRS ──────────────────────────────────────────────────────
     if "srs" not in completed:
@@ -1196,6 +1428,17 @@ def _run_full_SDLC_cycle(
         except Exception as exc:
             _save_pipeline_state(query, completed, config)
             err(f"SRS stage failed: {exc}")
+            info(f"Pipeline checkpoint saved. Run '/pipeline resume' to retry from this stage.")
+            return
+
+    if "milestones" not in completed:
+        try:
+            _run_stage("milestones", query, config)
+            completed.append("milestones")
+            _save_pipeline_state(query, completed, config)
+        except Exception as exc:
+            _save_pipeline_state(query, completed, config)
+            err(f"Milestones stage failed: {exc}")
             info(f"Pipeline checkpoint saved. Run '/pipeline resume' to retry from this stage.")
             return
 
@@ -1306,7 +1549,7 @@ Context
   Each response prints current context usage as a footer.
 
 Pipeline
-  Big product requests run SRS -> Tech Stack selection -> Code -> QA -> Deployment.
+  Big product requests run SRS -> Milestones -> Tech Stack selection -> Code -> QA -> Deployment.
   Simple requests bypass the pipeline and run directly.
   Each stage is checkpointed — if a stage fails, run '/pipeline resume' to continue.
     /pipeline <request>    Start a new pipeline (auto-detects existing checkpoint)

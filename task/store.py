@@ -1,9 +1,8 @@
-"""Thread-safe task store: in-memory dict persisted to .dev-council/tasks.json."""
+"""Thread-safe task store: in-memory dict persisted to SDLC/tasks.json."""
 from __future__ import annotations
 
 import json
 import threading
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,16 +11,15 @@ from .types import Task, TaskStatus
 
 _lock = threading.Lock()
 
-# Tasks are keyed by ID, stored per session in <cwd>/.dev-council/tasks.json
-# The store is kept in memory; we reload from disk on first access.
-
 _tasks: dict[str, Task] = {}
 _loaded = False
 
 
-# ── persistence ───────────────────────────────────────────────────────────────
-
 def _tasks_file() -> Path:
+    return Path.cwd() / "SDLC" / "tasks.json"
+
+
+def _legacy_tasks_file() -> Path:
     return Path.cwd() / ".dev-council" / "tasks.json"
 
 
@@ -30,9 +28,13 @@ def _load() -> None:
     if _loaded:
         return
     f = _tasks_file()
+    if not f.exists():
+        legacy = _legacy_tasks_file()
+        if legacy.exists():
+            f = legacy
     if f.exists():
         try:
-            data = json.loads(f.read_text())
+            data = json.loads(f.read_text(encoding="utf-8"))
             for item in data.get("tasks", []):
                 t = Task.from_dict(item)
                 _tasks[t.id] = t
@@ -45,7 +47,7 @@ def _save() -> None:
     f = _tasks_file()
     f.parent.mkdir(parents=True, exist_ok=True)
     data = {"tasks": [t.to_dict() for t in _tasks.values()]}
-    f.write_text(json.dumps(data, indent=2))
+    f.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _next_id() -> str:
