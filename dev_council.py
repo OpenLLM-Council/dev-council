@@ -71,7 +71,7 @@ from task import (
 from tools import ask_input_interactive
 
 
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 
 C = {
     "cyan": "\033[36m",
@@ -1538,6 +1538,9 @@ def cmd_help(_args: str, _state: AgentState, _config: dict) -> bool:
 /skills
   List available agent skills loaded from disk and built-ins.
 
+/permission
+  Choose whether agent edits are approved automatically or confirmed manually.
+
 MCP Tools
   Connected MCP servers expose callable tools named mcp__<server>__<tool>.
   Use /mcp to list server status and /mcp reload to refresh configured servers.
@@ -1741,16 +1744,35 @@ def cmd_thinking(_args: str, _state: AgentState, config: dict) -> bool:
 
 
 def cmd_permissions(args: str, _state: AgentState, config: dict) -> bool:
-    raw = args.strip()
+    raw = args.strip().lower()
+    aliases = {
+        "approve all": "accept-all",
+        "approve-all": "accept-all",
+        "approve_all": "accept-all",
+        "all": "accept-all",
+        "accept all": "accept-all",
+        "accept-all": "accept-all",
+        "manual": "manual",
+        "manually": "manual",
+        "auto": "auto",
+        "plan": "plan",
+    }
     if not raw:
-        info(f"permission_mode = {config.get('permission_mode')}")
+        print("Permission mode:")
+        print("  [1] approve all  - apply agent edits without asking y/n")
+        print("  [2] manually     - ask y/n before each edit or risky command")
+        choice = ask_input_interactive("Choose permission mode [1/2]: ", config).strip().lower()
+        raw = {"1": "approve all", "2": "manual"}.get(choice, choice)
+        if not raw:
+            info(f"permission_mode = {config.get('permission_mode')}")
+            return True
+    mode = aliases.get(raw)
+    if mode is None:
+        err("Use one of: approve all, manually")
         return True
-    if raw not in {"auto", "manual", "accept-all", "plan"}:
-        err("Use one of: auto, manual, accept-all, plan")
-        return True
-    config["permission_mode"] = raw
+    config["permission_mode"] = mode
     save_config(config)
-    ok(f"permission_mode = {raw}")
+    ok(f"permission_mode = {mode}")
     return True
 
 
@@ -2191,6 +2213,7 @@ COMMANDS = {
     "cost": cmd_cost,
     "verbose": cmd_verbose,
     "thinking": cmd_thinking,
+    "permission": cmd_permissions,
     "permissions": cmd_permissions,
     "cwd": cmd_cwd,
     "skills": cmd_skills,

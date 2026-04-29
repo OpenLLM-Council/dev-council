@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dev-council"
-version = "2.6.0"
+version = "2.7.0"
 description = "Minimal SDLC coding CLI with Ollama local/cloud support"
 readme = "README.md"
 requires-python = ">=3.11, <3.13"

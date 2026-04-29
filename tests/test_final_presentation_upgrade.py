@@ -237,12 +237,36 @@ def test_help_only_documents_final_surface(capsys):
     assert "/model" in output
     assert "/compact" in output
     assert "/skills" in output
+    assert "/permission" in output
     assert "MCP Tools" in output
     assert "Memory" in output
     assert "Context" in output
     assert "Pipeline" in output
     assert "/doctor" not in output
     assert "/council" not in output
+
+
+def test_permission_command_accepts_approve_all(monkeypatch):
+    saved = []
+    monkeypatch.setattr(dev_council, "save_config", lambda cfg: saved.append(dict(cfg)))
+    config = {"permission_mode": "manual"}
+
+    assert dev_council.cmd_permissions("approve all", AgentState(), config)
+
+    assert config["permission_mode"] == "accept-all"
+    assert saved[-1]["permission_mode"] == "accept-all"
+
+
+def test_permission_command_interactive_manual(monkeypatch):
+    saved = []
+    monkeypatch.setattr(dev_council, "save_config", lambda cfg: saved.append(dict(cfg)))
+    monkeypatch.setattr(dev_council, "ask_input_interactive", lambda *args, **kwargs: "2")
+    config = {"permission_mode": "accept-all"}
+
+    assert dev_council.handle_slash("/permission", AgentState(), config)
+
+    assert config["permission_mode"] == "manual"
+    assert saved[-1]["permission_mode"] == "manual"
 
 
 def test_banner_prints_big_cli_title(capsys):
